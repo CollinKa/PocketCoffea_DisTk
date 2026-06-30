@@ -16,7 +16,8 @@ Z_MASS = 91.1876
 LAYERS = ("NLayers4", "NLayers5", "NLayers6plus", "combinedBins")
 MUON_TRIGGER_MATCHING_DR = 0.3
 MUON_TRIGOBJ_ID = 13
-MUON_ISOMU24_FILTER_BIT = 3
+MUON_ISOMU24_FILTER_BIT = 3  #matched to muonTriggerFilterNameTag: hltL3crIsoL1*SingleMu*IsoFiltered0p08 & hltL3crIsoL1*SingleMu*IsoFiltered
+
 
 # Canonical Pveto names are kept in the analysis code.  The aliases let the same
 # Pveto code read OSUNano-style central branches without duplicating the logic.
