@@ -23,6 +23,7 @@ MUON_ISOMU24_FILTER_BIT = 3
 BRANCH_ALIASES = {
     "metNoMu_pt": ("MetNoMu_pt",),
     "metNoMu_phi": ("MetNoMu_phi",),
+    "passMETFilters": ("Flag_METFilters",),
     "muon_isTrigMatched": ("Muon_isTrigMatched",),
     "jet_isTightLepVeto": ("Jet_isTightLepVeto",),
     "trk_caloTotNoPU": ("IsoTrack_caloTotNoPU",),
@@ -57,6 +58,10 @@ COMPUTED_BRANCH_REQUIREMENTS = {
         "Jet_neMultiplicity",
         "Jet_eta",
     ),
+}
+
+CENTRAL_FALLBACK_BRANCH_REQUIREMENTS = {
+    "jet_isTightLepVeto": ("Jet_jetId",),
 }
 
 OPTIONAL_BRANCHES = (
@@ -118,7 +123,16 @@ BRANCH_NOTES = {
     ),
     "jet_isTightLepVeto": (
         "For OSUNano inputs this is computed from central Jet energy fractions "
-        "and multiplicities using anatools::jetPassesTightLepVeto for CMSSW >= 12_4_11."
+        "and multiplicities using anatools::jetPassesTightLepVeto for CMSSW >= 12_4_11. "
+        "For central-like NanoAOD inputs without the charged/neutral multiplicity split, "
+        "Coffee falls back to the central NanoAOD Jet_jetId tight-lepton-veto bit."
+    ),
+    "passMETFilters": (
+        "For central-like NanoAOD inputs this maps to Flag_METFilters."
+    ),
+    "passJvmFilter": (
+        "No central NanoAOD jet-veto-map branch is available in v1.0.0-pre outputs. "
+        "For central-like NanoAOD inputs, Coffee treats this filter as passing."
     ),
     "Electron_eta": (
         "Electron_eta is required for the electron-track veto. The OSUNano "
@@ -176,8 +190,14 @@ def has_branch(arrays, name: str) -> bool:
 
 
 def available_has_branch(available: set[str], name: str) -> bool:
+    if name == "passJvmFilter":
+        return True
     if any(option in available for option in branch_options(name)):
         return True
+    if name in COMPUTED_BRANCH_REQUIREMENTS and all(req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
+        return True
+    if name in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS:
+        return all(req in available for req in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name])
     if name in COMPUTED_BRANCH_REQUIREMENTS:
         return all(req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name])
     return False
@@ -193,6 +213,8 @@ def input_branches_for_available(available: set[str]) -> list[str]:
         else:
             if name in COMPUTED_BRANCH_REQUIREMENTS and all(req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
                 needed.extend(COMPUTED_BRANCH_REQUIREMENTS[name])
+            elif name in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS and all(req in available for req in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name]):
+                needed.extend(CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name])
     needed.extend(option for option in OPTIONAL_BRANCHES if option in available)
     return sorted(set(needed))
 
@@ -220,6 +242,9 @@ def exact_branch(arrays, name: str):
 
 def branch(arrays, name: str):
     """Read a canonical DisTkMuonPveto branch, with OSUNano aliases if needed."""
+    if name == "passJvmFilter" and not has_exact_branch(arrays, name):
+        return ak.ones_like(branch(arrays, "metNoMu_pt"), dtype=bool)
+
     if name == "trk_caloTotNoPU" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
         if all(has_exact_branch(arrays, req) for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
             calo_total = exact_branch(arrays, "IsoTrack_caloEm") + exact_branch(arrays, "IsoTrack_caloHad")
@@ -242,6 +267,8 @@ def branch(arrays, name: str):
                 | ((nehef < 0.99) & (neemef < 0.99) & (nemult > 1) & (eta > 2.7) & (eta <= 3.0))
                 | ((neemef < 0.4) & (nemult > 10) & (eta > 3.0) & (eta <= 5.0))
             )
+        if has_exact_branch(arrays, "Jet_jetId"):
+            return np.bitwise_and(exact_branch(arrays, "Jet_jetId"), 4) != 0  #Jet tight lepton veto bit
 
     for option in branch_options(name):
         try:
