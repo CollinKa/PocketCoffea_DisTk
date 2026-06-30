@@ -1,0 +1,6 @@
+executor: iterative
+scaleout: 1
+chunksize: 150000
+limit-files: 1
+limit-chunks: 1
+ignore-grid-certificate: true

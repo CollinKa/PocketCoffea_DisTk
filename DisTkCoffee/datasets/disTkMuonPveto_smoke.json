@@ -1,0 +1,17 @@
+{
+  "DATA_Muon_Run2022F_OSUNano_Smoke": {
+    "files": [
+      "/uscms/home/czheng/nobackup/CMSSW_15_0_10/src/DisplacedLeptonsSupplement/test_outputs/distkcoffee_run2024C_muon0_20260624_eventfilters_proxy/osunano_distkcoffee_noskim_10.root"
+    ],
+    "metadata": {
+      "era": "F",
+      "isMC": "False",
+      "nano_version": 15,
+      "nevents": 30,
+      "primaryDataset": "Muon",
+      "sample": "DATA_Muon",
+      "source": "OSUNano smoke test",
+      "year": "2022"
+    }
+  }
+}
