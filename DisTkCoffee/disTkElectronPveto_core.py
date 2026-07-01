@@ -14,6 +14,9 @@ vector.register_awkward()
 ELECTRON_MASS = 0.000511
 Z_MASS = 91.1876
 LAYERS = ("NLayers4", "NLayers5", "NLayers6plus", "combinedBins")
+ELECTRON_TRIGGER_MATCHING_DR = 0.3
+ELECTRON_TRIGOBJ_ID = 11
+ELECTRON_WPTIGHT_TRACKISO_FILTER_BIT = 1
 
 BRANCH_ALIASES = {
     "ele_pt": ("Electron_pt",),
@@ -72,6 +75,10 @@ COMPUTED_BRANCH_REQUIREMENTS = {
     ),
 }
 
+TRIGGER_MATCH_BRANCH_REQUIREMENTS = {
+    "ele_isTrigMatched": ("TrigObj_id", "TrigObj_filterBits", "TrigObj_eta", "TrigObj_phi"),
+}
+
 OPTIONAL_BRANCHES = (
     "HLT_Ele32_WPTight_Gsf",
     "HLT_Ele32_WPTight_Gsf_L1DoubleEG",
@@ -79,6 +86,10 @@ OPTIONAL_BRANCHES = (
     "passJvmFilter",
     "ele_isTrigMatched",
     "jet_isTightLepVeto",
+    "TrigObj_id",
+    "TrigObj_filterBits",
+    "TrigObj_eta",
+    "TrigObj_phi",
 )
 
 PVETO_BRANCHES = [
@@ -116,7 +127,8 @@ PVETO_BRANCHES = [
 BRANCH_NOTES = {
     "ele_isTrigMatched": (
         "The electron Pveto tag selection needs the MattWIP trigger-object match. "
-        "For OSUNano inputs this is Electron_isTrigMatched."
+        "For OSUNano inputs this is read from Electron_isTrigMatched when present, "
+        "otherwise computed from NanoAOD TrigObj electron WPTight TrackIso bits."
     ),
     "ele_isTight": (
         "For OSUNano inputs this is read from Electron_isTight if present, "
@@ -170,6 +182,8 @@ def has_exact_branch(arrays, name: str) -> bool:
 def available_has_branch(available: set[str], name: str) -> bool:
     if any(option in available for option in branch_options(name)):
         return True
+    if name in TRIGGER_MATCH_BRANCH_REQUIREMENTS:
+        return all(req in available for req in TRIGGER_MATCH_BRANCH_REQUIREMENTS[name])
     if name in COMPUTED_BRANCH_REQUIREMENTS:
         return all(req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name])
     return False
@@ -178,6 +192,8 @@ def available_has_branch(available: set[str], name: str) -> bool:
 def has_branch(arrays, name: str) -> bool:
     if any(has_exact_branch(arrays, option) for option in branch_options(name)):
         return True
+    if name in TRIGGER_MATCH_BRANCH_REQUIREMENTS:
+        return all(has_exact_branch(arrays, req) for req in TRIGGER_MATCH_BRANCH_REQUIREMENTS[name])
     if name in COMPUTED_BRANCH_REQUIREMENTS:
         return all(has_exact_branch(arrays, req) for req in COMPUTED_BRANCH_REQUIREMENTS[name])
     return False
@@ -191,7 +207,11 @@ def input_branches_for_available(available: set[str]) -> list[str]:
                 needed.append(option)
                 break
         else:
-            if name in COMPUTED_BRANCH_REQUIREMENTS and all(
+            if name in TRIGGER_MATCH_BRANCH_REQUIREMENTS and all(
+                req in available for req in TRIGGER_MATCH_BRANCH_REQUIREMENTS[name]
+            ):
+                needed.extend(TRIGGER_MATCH_BRANCH_REQUIREMENTS[name])
+            elif name in COMPUTED_BRANCH_REQUIREMENTS and all(
                 req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name]
             ):
                 needed.extend(COMPUTED_BRANCH_REQUIREMENTS[name])
@@ -221,6 +241,12 @@ def exact_branch(arrays, name: str):
 
 
 def branch(arrays, name: str):
+    if name == "ele_isTrigMatched":
+        saved_match = aligned_saved_branch(arrays, "ele_isTrigMatched", "ele_pt")
+        if saved_match is not None:
+            return saved_match
+        return electron_trigger_match_mask(arrays)
+
     if name == "ele_isTight" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
         return exact_branch(arrays, "Electron_cutBased") >= 4
 
@@ -260,6 +286,25 @@ def branch(arrays, name: str):
     raise KeyError(missing_branch_message(name))
 
 
+def aligned_saved_branch(arrays, name: str, reference_name: str):
+    for option in branch_options(name):
+        try:
+            value = exact_branch(arrays, option)
+        except KeyError:
+            continue
+        try:
+            value_counts = ak.num(value, axis=1)
+            reference_counts = ak.num(branch(arrays, reference_name), axis=1)
+        except Exception:
+            return None
+        try:
+            if bool(ak.all(value_counts == reference_counts)):
+                return value
+        except Exception:
+            return None
+    return None
+
+
 def event_trigger_mask(arrays):
     masks = []
     for name in ("HLT_Ele32_WPTight_Gsf", "HLT_Ele32_WPTight_Gsf_L1DoubleEG"):
@@ -281,6 +326,23 @@ def event_filter_mask(arrays, name: str):
 
 def delta_phi(phi1, phi2):
     return np.arctan2(np.sin(phi1 - phi2), np.cos(phi1 - phi2))
+
+
+def electron_trigger_match_mask(arrays):
+    trig_fields = ("TrigObj_id", "TrigObj_filterBits", "TrigObj_eta", "TrigObj_phi")
+    if not all(has_branch(arrays, name) for name in trig_fields):
+        return ak.ones_like(branch(arrays, "ele_pt"), dtype=bool)
+
+    trig_mask = (np.abs(branch(arrays, "TrigObj_id")) == ELECTRON_TRIGOBJ_ID) & (
+        np.bitwise_and(branch(arrays, "TrigObj_filterBits"), 1 << ELECTRON_WPTIGHT_TRACKISO_FILTER_BIT) != 0
+    )
+    electrons = ak.zip({"eta": branch(arrays, "ele_eta"), "phi": branch(arrays, "ele_phi")})
+    trig_objs = ak.zip({"eta": branch(arrays, "TrigObj_eta"), "phi": branch(arrays, "TrigObj_phi")})[
+        trig_mask
+    ]
+    ele, obj = ak.unzip(ak.cartesian([electrons, trig_objs], nested=True))
+    dr = np.sqrt((ele.eta - obj.eta) ** 2 + delta_phi(ele.phi, obj.phi) ** 2)
+    return ak.fill_none(ak.any(dr < ELECTRON_TRIGGER_MATCHING_DR, axis=2), False) #electron is trigger matched.
 
 
 def min_delta_r_mask(arrays, prefix: str, min_dr: float, obj_mask=None):
