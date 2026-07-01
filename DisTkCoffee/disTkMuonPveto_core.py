@@ -26,11 +26,16 @@ BRANCH_ALIASES = {
     "metNoMu_phi": ("MetNoMu_phi",),
     "passMETFilters": ("Flag_METFilters",),
     "muon_isTrigMatched": ("Muon_isTrigMatched",),
+    "tau_eta": ("Tau_eta",),
+    "tau_phi": ("Tau_phi",),
+    "tau_isTight": ("Tau_isTight",),
     "jet_isTightLepVeto": ("Jet_isTightLepVeto",),
     "trk_caloTotNoPU": ("IsoTrack_caloTotNoPU",),
     "trk_pt": ("IsoTrack_pt",),
     "trk_eta": ("IsoTrack_eta",),
     "trk_phi": ("IsoTrack_phi",),
+    "trk_isFiducialECALTrack": ("IsoTrack_isFiducialECALTrack",),
+    "trk_minDRToMaskedEcal": ("IsoTrack_minDRToMaskedEcal",),
     "trk_theta": ("IsoTrack_theta",),
     "trk_charge": ("IsoTrack_charge",),
     "trk_dxy": ("IsoTrack_dxy",),
@@ -49,6 +54,12 @@ COMPUTED_BRANCH_REQUIREMENTS = {
         "IsoTrack_caloHad",
         "Rho_fixedGridRhoFastjetCentralCalo",
     ),
+    "tau_isTight": (
+        "Tau_idDecayModeNewDMs",
+        "Tau_idDeepTau2018v2p5VSe",
+        "Tau_idDeepTau2018v2p5VSmu",
+    ),
+    "trk_isFiducialECALTrack": ("IsoTrack_minDRToMaskedEcal",),
     "jet_isTightLepVeto": (
         "Jet_neHEF",
         "Jet_neEmEF",
@@ -87,6 +98,9 @@ PVETO_BRANCHES = [
     "Muon_tightId",
     "Electron_eta",
     "Electron_phi",
+    "tau_eta",
+    "tau_phi",
+    "tau_isTight",
     "Jet_eta",
     "Jet_phi",
     "Jet_pt",
@@ -94,6 +108,7 @@ PVETO_BRANCHES = [
     "trk_pt",
     "trk_eta",
     "trk_phi",
+    "trk_isFiducialECALTrack",
     "trk_theta",
     "trk_charge",
     "trk_dxy",
@@ -114,6 +129,14 @@ BRANCH_NOTES = {
         "For OSUNano inputs this is reconstructed from IsoTrack_caloEm, IsoTrack_caloHad, "
         "and Rho_fixedGridRhoFastjetCentralCalo using the MattWIP ntuplizer formula "
         "max(0, caloTotal - rhoCentralCalo * pi * 0.4^2)."
+    ),
+    "tau_isTight": (
+        "For OSUNano inputs this is read from Tau_isTight if present, otherwise "
+        "computed from decayModeNewDMs plus Run 3 DeepTau VSe/Vsmu working points."
+    ),
+    "trk_isFiducialECALTrack": (
+        "For OSUNano inputs this is read from IsoTrack_isFiducialECALTrack if present, "
+        "otherwise computed as IsoTrack_minDRToMaskedEcal < 0 or > 0.05."
     ),
     "trk_hitDrop_missingMiddleHits": (
         "For OSUNano inputs this maps to IsoTrack_missingMiddleHits."
@@ -245,6 +268,16 @@ def branch(arrays, name: str):
     """Read a canonical DisTkMuonPveto branch, with OSUNano aliases if needed."""
     if name == "passJvmFilter" and not has_exact_branch(arrays, name):
         return ak.ones_like(branch(arrays, "metNoMu_pt"), dtype=bool)
+
+    if name == "tau_isTight" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
+        decay = exact_branch(arrays, "Tau_idDecayModeNewDMs") != 0
+        vse = exact_branch(arrays, "Tau_idDeepTau2018v2p5VSe") >= 1
+        vsmu = exact_branch(arrays, "Tau_idDeepTau2018v2p5VSmu") >= 1
+        return decay & vse & vsmu
+
+    if name == "trk_isFiducialECALTrack" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
+        min_dr = exact_branch(arrays, "IsoTrack_minDRToMaskedEcal")
+        return (min_dr < 0.0) | (min_dr > 0.05)
 
     if name == "trk_caloTotNoPU" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
         if all(has_exact_branch(arrays, req) for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
@@ -389,7 +422,6 @@ def muon_tag_mask(arrays):
     mask = mask & (branch(arrays, "Muon_pt") > 26)
     mask = mask & (np.abs(branch(arrays, "Muon_eta")) < 2.1)
     mask = mask & branch(arrays, "Muon_tightId")
-    mask = mask & (trans_mass(arrays, "Muon") < 40)
     return mask
 
 
@@ -401,10 +433,15 @@ def good_jet_mask(arrays):
     )
 
 
+def good_tau_mask(arrays):
+    return branch(arrays, "tau_isTight")
+
+
 def probe_track_denominator_mask(arrays, layer: str):
     mask = branch(arrays, "trk_pt") > 30
     mask = mask & (np.abs(branch(arrays, "trk_eta")) < 2.1)
     mask = mask & fiducial_eta_mask(arrays)
+    mask = mask & branch(arrays, "trk_isFiducialECALTrack")
     mask = mask & (
         (np.abs(branch(arrays, "trk_dz")) > 0.5)
         | (np.abs((np.pi / 2.0) - branch(arrays, "trk_theta")) > 1.0e-3)
@@ -418,6 +455,7 @@ def probe_track_denominator_mask(arrays, layer: str):
 
     mask = mask & min_delta_r_mask(arrays, "Jet", 0.5, obj_mask=good_jet_mask(arrays))
     mask = mask & min_delta_r_mask(arrays, "Electron", 0.15)
+    mask = mask & min_delta_r_mask(arrays, "tau", 0.15, obj_mask=good_tau_mask(arrays))
     mask = mask & (branch(arrays, "trk_caloTotNoPU") < 10)
     mask = mask & layer_mask(arrays, layer)
 
@@ -474,9 +512,7 @@ def make_tp_cutflow(arrays, layer: str):
     add(">= 1 muons |eta| < 2.1", ak.any(mu, axis=1))
     mu = mu & branch(arrays, "Muon_tightId")
     add(">= 1 muons passing tight muon ID", ak.any(mu, axis=1))
-    mu = mu & (trans_mass(arrays, "Muon") < 40)
-    add(">= 1 muons MT(pTmiss, muon) < 40 GeV", ak.any(mu, axis=1))
-    add("exactly one passing muon chosen randomly", ak.any(mu, axis=1))
+    add(">= 1 passing muon tag", ak.any(mu, axis=1))
 
     trk = branch(arrays, "trk_pt") > 30
     add(">= 1 tracks pT > 30 GeV", ak.any(trk, axis=1))
@@ -489,6 +525,8 @@ def make_tp_cutflow(arrays, layer: str):
     add(">= 1 tracks |eta| < 1.42 OR |eta| > 1.65", ak.any(trk, axis=1))
     trk = trk & ((np.abs(trk_eta) < 1.55) | (np.abs(trk_eta) > 1.85))
     add(">= 1 tracks |eta| < 1.55 OR |eta| > 1.85", ak.any(trk, axis=1))
+    trk = trk & branch(arrays, "trk_isFiducialECALTrack")
+    add(">= 1 tracks min DeltaRtrack,noisy/dead ECAL channel > 0.05", ak.any(trk, axis=1))
     trk = trk & (
         (np.abs(branch(arrays, "trk_dz")) > 0.5)
         | (np.abs((np.pi / 2.0) - branch(arrays, "trk_theta")) > 1.0e-3)
@@ -522,9 +560,11 @@ def make_tp_cutflow(arrays, layer: str):
 
     trk = trk & min_delta_r_mask(arrays, "Electron", 0.15)
     add(">= 1 tracks min DeltaRtrack,electron > 0.15", ak.any(trk, axis=1))
+    trk = trk & min_delta_r_mask(arrays, "tau", 0.15, obj_mask=good_tau_mask(arrays))
+    add(">= 1 tracks min DeltaRtrack,had. tau > 0.15", ak.any(trk, axis=1))
     trk = trk & (branch(arrays, "trk_caloTotNoPU") < 10)
     add(">= 1 tracks Ecalo < 10 GeV", ak.any(trk, axis=1))
-    add("exactly one passing track chosen randomly", ak.any(trk, axis=1))
+    add(">= 1 passing probe track before layer selection", ak.any(trk, axis=1))
 
     trk = trk & layer_mask(arrays, layer)
     muons = build_muon_vectors(arrays, mu)

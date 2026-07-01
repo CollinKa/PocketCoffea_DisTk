@@ -29,6 +29,7 @@ LATEX_LABELS = {
     ">= 1 muons pT > 26 GeV": r"$\geq 1$ muon with $p_{\mathrm{T}}>26~\mathrm{GeV}$",
     ">= 1 muons |eta| < 2.1": r"$\geq 1$ muon with $|\eta|<2.1$",
     ">= 1 muons passing tight muon ID": r"$\geq 1$ muon passing tight muon ID",
+    ">= 1 passing muon tag": r"$\geq 1$ passing muon tag",
     ">= 1 muons MT(pTmiss, muon) < 40 GeV": (
         r"$\geq 1$ muon with $M_{\mathrm{T}}(p_{\mathrm{T}}^{\mathrm{miss}},\mu)<40~\mathrm{GeV}$"
     ),
@@ -43,6 +44,9 @@ LATEX_LABELS = {
     ),
     ">= 1 tracks |eta| < 1.55 OR |eta| > 1.85": (
         r"$\geq 1$ track with $|\eta|<1.55$ or $|\eta|>1.85$"
+    ),
+    ">= 1 tracks min DeltaRtrack,noisy/dead ECAL channel > 0.05": (
+        r"$\geq 1$ track with $\min\Delta R(\mathrm{track},\mathrm{noisy/dead~ECAL~channel})>0.05$"
     ),
     ">= 1 tracks |dz| > 0.5 cm OR |lambda| > 1e-3": (
         r"$\geq 1$ track with $|d_{z}|>0.5~\mathrm{cm}$ or $|\lambda|>10^{-3}$"
@@ -69,6 +73,9 @@ LATEX_LABELS = {
     ),
     ">= 1 tracks Ecalo < 10 GeV": r"$\geq 1$ track with $E_{\mathrm{calo}}<10~\mathrm{GeV}$",
     "exactly one passing track chosen randomly": r"Exactly one passing track chosen randomly",
+    ">= 1 passing probe track before layer selection": (
+        r"$\geq 1$ passing probe track before layer selection"
+    ),
     "= 1 track-muon pairs |Mtrack,muon - MZ| < 10 GeV": (
         r"$\geq 1$ track--muon pair with $|M_{\mathrm{track},\mu}-M_{Z}|<10~\mathrm{GeV}$"
     ),
