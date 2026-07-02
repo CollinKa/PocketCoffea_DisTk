@@ -12,6 +12,27 @@ DEFAULT_IMAGE = "/cvmfs/unpacked.cern.ch/gitlab-registry.cern.ch/cms-analysis/ge
 DEFAULT_PROXY = "/uscms/home/czheng/x509up_u3691"
 DEFAULT_XROOTD_PREFIX = "root://cmseos.fnal.gov/"
 
+CHANNEL_CONFIGS = {
+    "muon": {
+        "runner": "DisTkCoffee/run_disTkMuonPveto.py",
+        "single_arg": "--single-muon",
+        "wrapper": "run_disTkMuonPveto_split.sh",
+        "submit": "disTkMuonPveto.submit",
+        "default_label_prefix": "distk_muon_pveto",
+    },
+    "electron": {
+        "runner": "DisTkCoffee/run_disTkElectronPveto.py",
+        "single_arg": "--single-electron",
+        "wrapper": "run_disTkElectronPveto_split.sh",
+        "submit": "disTkElectronPveto.submit",
+        "default_label_prefix": "distk_electron_pveto",
+    },
+}
+
+
+def channel_config(args: argparse.Namespace) -> dict[str, str]:
+    return CHANNEL_CONFIGS[args.channel]
+
 
 def run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess:
     print("+ " + " ".join(shlex.quote(part) for part in command))
@@ -70,6 +91,7 @@ def ensure_new_dir(path: Path, overwrite: bool) -> None:
 
 
 def write_wrapper(path: Path, args: argparse.Namespace) -> None:
+    config = channel_config(args)
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -94,8 +116,8 @@ apptainer exec \\
   -B /cvmfs:/cvmfs \\
   -B "${{PWD}}:${{PWD}}" \\
   "${{IMAGE}}" \\
-  python3 DisTkCoffee/run_disTkMuonPveto.py \\
-    --single-muon "${{FILES[@]}}" \\
+  python3 {config["runner"]} \\
+    {config["single_arg"]} "${{FILES[@]}}" \\
     --tree "${{TREE}}" \\
     --layers "${{LAYERS}}" \\
     --chunk-size "${{CHUNK_SIZE}}" \\
@@ -107,11 +129,12 @@ apptainer exec \\
 
 
 def write_submit_file(path: Path, repo_root: Path, args: argparse.Namespace) -> None:
+    config = channel_config(args)
     distkcoffee_dir = repo_root / "DisTkCoffee"
     chunk_size = args.chunk_size.replace(" ", "")
     path.write_text(
         f"""universe = vanilla
-executable = run_disTkMuonPveto_split.sh
+executable = {config["wrapper"]}
 arguments = $(IDX) {args.tree} {args.layers} {chunk_size}
 transfer_input_files = {distkcoffee_dir},split_filelists
 transfer_output_files = analysis_output_$(IDX)
@@ -130,10 +153,12 @@ queue IDX from split_indices.txt
 
 
 def write_manifest(path: Path, args: argparse.Namespace, files: list[str], splits: list[list[str]]) -> None:
+    config = channel_config(args)
     input_source = args.input_dir if args.input_dir else str(args.input_filelist)
     path.write_text(
         f"""# DisTkCoffee Condor Run Manifest
 
+channel: {args.channel}
 run_label: {args.run_label}
 created: {datetime.now().isoformat(timespec="seconds")}
 input_source: {input_source}
@@ -145,11 +170,13 @@ layers: {args.layers}
 chunk_size: {args.chunk_size}
 proxy: {args.proxy}
 image: {args.image}
+runner: {config["runner"]}
+submit_file: {config["submit"]}
 
 Submit from this directory with:
 
 ```bash
-condor_submit disTkMuonPveto.submit
+condor_submit {config["submit"]}
 ```
 
 After completion, expect one JSON and ROOT output in each `analysis_output_*` directory.
@@ -174,7 +201,13 @@ def check_proxy(proxy: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepare and optionally submit LPC Condor jobs for OSUNano DisTkCoffee muon Pveto."
+        description="Prepare and optionally submit LPC Condor jobs for OSUNano DisTkCoffee Pveto."
+    )
+    parser.add_argument(
+        "--channel",
+        default="muon",
+        choices=sorted(CHANNEL_CONFIGS),
+        help="Pveto channel to run. Muon remains the default for backward compatibility.",
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument(
@@ -186,7 +219,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Text file with one NanoAOD ROOT file or XRootD URL per line.",
     )
-    parser.add_argument("--run-label", default=f"distk_muon_pveto_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    parser.add_argument("--run-label")
     parser.add_argument("--result-base", type=Path, default=Path("validation/results"))
     parser.add_argument("--files-per-job", type=int, default=25)
     parser.add_argument("--max-files", type=int, help="Limit input file count for a smoke-scale Condor test.")
@@ -211,6 +244,9 @@ def main() -> None:
     args = parse_args()
     if args.files_per_job <= 0:
         raise SystemExit("--files-per-job must be positive")
+    if args.run_label is None:
+        prefix = channel_config(args)["default_label_prefix"]
+        args.run_label = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     script_path = Path(__file__)
     if script_path.is_absolute():
@@ -237,25 +273,27 @@ def main() -> None:
     split_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
+    config = channel_config(args)
     for index, split in enumerate(splits):
         (split_dir / f"files_{index}.txt").write_text("\n".join(split) + "\n")
     (condor_dir / "split_indices.txt").write_text("\n".join(str(i) for i in range(len(splits))) + "\n")
-    write_wrapper(condor_dir / "run_disTkMuonPveto_split.sh", args)
-    write_submit_file(condor_dir / "disTkMuonPveto.submit", repo_root, args)
+    write_wrapper(condor_dir / config["wrapper"], args)
+    write_submit_file(condor_dir / config["submit"], repo_root, args)
     write_manifest(condor_dir / "MANIFEST.md", args, files, splits)
 
     print(f"Prepared {len(splits)} Condor jobs from {len(files)} input files")
     print(f"Condor directory: {condor_dir}")
-    print(f"Submit file: {condor_dir / 'disTkMuonPveto.submit'}")
+    print(f"Submit file: {condor_dir / config['submit']}")
 
     if args.submit:
         check_proxy(args.proxy)
-        proc = subprocess.run(["condor_submit", "disTkMuonPveto.submit"], cwd=condor_dir, text=True)
+        submit_cmd = f"condor_submit {shlex.quote(config['submit'])}"
+        proc = subprocess.run(["/bin/bash", "-lc", submit_cmd], cwd=condor_dir, text=True)
         raise SystemExit(proc.returncode)
 
     print("Not submitted. Inspect the directory, then run:")
     print(f"  cd {condor_dir}")
-    print("  condor_submit disTkMuonPveto.submit")
+    print(f"  condor_submit {config['submit']}")
 
 
 if __name__ == "__main__":

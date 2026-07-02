@@ -19,10 +19,14 @@ ELECTRON_TRIGOBJ_ID = 11
 ELECTRON_WPTIGHT_TRACKISO_FILTER_BIT = 1
 
 BRANCH_ALIASES = {
+    "passMETFilters": ("Flag_METFilters",),
     "ele_pt": ("Electron_pt",),
     "ele_eta": ("Electron_eta",),
     "ele_phi": ("Electron_phi",),
     "ele_charge": ("Electron_charge",),
+    "ele_dxy": ("Electron_dxy",),
+    "ele_dz": ("Electron_dz",),
+    "ele_deltaEtaSC": ("Electron_deltaEtaSC",),
     "ele_isTrigMatched": ("Electron_isTrigMatched",),
     "ele_isTight": ("Electron_isTight",),
     "muon_eta": ("Muon_eta",),
@@ -45,6 +49,7 @@ BRANCH_ALIASES = {
     "trk_missingInnerHits": ("IsoTrack_missingInnerHits",),
     "trk_hitDrop_missingMiddleHits": ("IsoTrack_missingMiddleHits",),
     "trk_missingOuterHits": ("IsoTrack_missingOuterHits",),
+    "trk_isFiducialECALTrack": ("IsoTrack_isFiducialECALTrack",),
     "trk_relativePFIso": ("IsoTrack_pfRelIso03_chg", "IsoTrack_pfRelIso03_all"),
     "trk_hp_numberOfValidPixelHits": ("IsoTrack_hp_nValidPixelHits",),
     "trk_hp_trackerLayersWithMeasurement": ("IsoTrack_hp_trackerLayersWithMeasurement",),
@@ -63,6 +68,7 @@ COMPUTED_BRANCH_REQUIREMENTS = {
         "IsoTrack_caloHad",
         "Rho_fixedGridRhoFastjetCentralCalo",
     ),
+    "trk_isFiducialECALTrack": ("IsoTrack_minDRToMaskedEcal",),
     "jet_isTightLepVeto": (
         "Jet_neHEF",
         "Jet_neEmEF",
@@ -75,6 +81,17 @@ COMPUTED_BRANCH_REQUIREMENTS = {
     ),
 }
 
+CENTRAL_FALLBACK_BRANCH_REQUIREMENTS = {
+    "jet_isTightLepVeto": ("Jet_jetId",),
+}
+
+# FIXME(2026-07-02): Current v1.0.0-pre Run2022 EGamma customized NanoAOD
+# lacks the saved jet-veto-map event decision (passJvmFilter/jetVeto2022).
+# Treat it as all-true only for temporary validation; strict Run 3 replication
+# needs this branch saved during NanoAOD production or an explicitly documented
+# approximate JVM recomputation from Jet_* branches.
+TEMPORARY_TRUE_IF_MISSING = {"passJvmFilter"}
+
 TRIGGER_MATCH_BRANCH_REQUIREMENTS = {
     "ele_isTrigMatched": ("TrigObj_id", "TrigObj_filterBits", "TrigObj_eta", "TrigObj_phi"),
 }
@@ -82,6 +99,7 @@ TRIGGER_MATCH_BRANCH_REQUIREMENTS = {
 OPTIONAL_BRANCHES = (
     "HLT_Ele32_WPTight_Gsf",
     "HLT_Ele32_WPTight_Gsf_L1DoubleEG",
+    "Flag_METFilters",
     "passMETFilters",
     "passJvmFilter",
     "ele_isTrigMatched",
@@ -93,10 +111,16 @@ OPTIONAL_BRANCHES = (
 )
 
 PVETO_BRANCHES = [
+    "HLT_Ele32_WPTight_Gsf",
+    "passMETFilters",
+    "passJvmFilter",
     "ele_pt",
     "ele_eta",
     "ele_phi",
     "ele_charge",
+    "ele_dxy",
+    "ele_dz",
+    "ele_deltaEtaSC",
     "ele_isTrigMatched",
     "ele_isTight",
     "muon_eta",
@@ -118,6 +142,7 @@ PVETO_BRANCHES = [
     "trk_missingInnerHits",
     "trk_hitDrop_missingMiddleHits",
     "trk_missingOuterHits",
+    "trk_isFiducialECALTrack",
     "trk_relativePFIso",
     "trk_caloTotNoPU",
     "trk_hp_numberOfValidPixelHits",
@@ -132,11 +157,24 @@ BRANCH_NOTES = {
     ),
     "ele_isTight": (
         "For OSUNano inputs this is read from Electron_isTight if present, "
-        "otherwise computed as Electron_cutBased >= 4."
+        "otherwise computed as Electron_cutBased >= 4. The explicit EB/EE dxy/dz "
+        "requirements are applied as separate tag rows to match V1 Run 3 code."
+    ),
+    "passJvmFilter": (
+        "FIXME(2026-07-02): current v1.0.0-pre Run2022 EGamma customized NanoAOD "
+        "does not contain the saved jet-veto-map event branch. Coffee temporarily "
+        "treats missing passJvmFilter as all true so validation can proceed; strict "
+        "Run 3 replication requires remaking NanoAOD with passJvmFilter/jetVeto2022 "
+        "or using an explicitly documented approximate JVM recomputation."
     ),
     "tau_isTight": (
         "For OSUNano inputs this is read from Tau_isTight if present, otherwise "
-        "computed from decayModeNewDMs plus DeepTau VSjet/VSe/VSmu working points."
+        "computed from decayModeNewDMs plus Run 3 DeepTau Tight VSjet, VVVLoose VSe, "
+        "and VLoose VSmu working points."
+    ),
+    "trk_isFiducialECALTrack": (
+        "For OSUNano inputs this is read from IsoTrack_isFiducialECALTrack if present, "
+        "otherwise computed as IsoTrack_minDRToMaskedEcal < 0 or > 0.05."
     ),
     "trk_caloTotNoPU": (
         "For OSUNano inputs this is reconstructed from IsoTrack_caloEm, "
@@ -180,22 +218,38 @@ def has_exact_branch(arrays, name: str) -> bool:
 
 
 def available_has_branch(available: set[str], name: str) -> bool:
+    if name in TEMPORARY_TRUE_IF_MISSING:
+        return True
     if any(option in available for option in branch_options(name)):
         return True
     if name in TRIGGER_MATCH_BRANCH_REQUIREMENTS:
         return all(req in available for req in TRIGGER_MATCH_BRANCH_REQUIREMENTS[name])
-    if name in COMPUTED_BRANCH_REQUIREMENTS:
-        return all(req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name])
+    if name in COMPUTED_BRANCH_REQUIREMENTS and all(
+        req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name]
+    ):
+        return True
+    if name in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS and all(
+        req in available for req in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name]
+    ):
+        return True
     return False
 
 
 def has_branch(arrays, name: str) -> bool:
+    if name in TEMPORARY_TRUE_IF_MISSING:
+        return True
     if any(has_exact_branch(arrays, option) for option in branch_options(name)):
         return True
     if name in TRIGGER_MATCH_BRANCH_REQUIREMENTS:
         return all(has_exact_branch(arrays, req) for req in TRIGGER_MATCH_BRANCH_REQUIREMENTS[name])
-    if name in COMPUTED_BRANCH_REQUIREMENTS:
-        return all(has_exact_branch(arrays, req) for req in COMPUTED_BRANCH_REQUIREMENTS[name])
+    if name in COMPUTED_BRANCH_REQUIREMENTS and all(
+        has_exact_branch(arrays, req) for req in COMPUTED_BRANCH_REQUIREMENTS[name]
+    ):
+        return True
+    if name in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS and all(
+        has_exact_branch(arrays, req) for req in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name]
+    ):
+        return True
     return False
 
 
@@ -215,6 +269,10 @@ def input_branches_for_available(available: set[str]) -> list[str]:
                 req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name]
             ):
                 needed.extend(COMPUTED_BRANCH_REQUIREMENTS[name])
+            elif name in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS and all(
+                req in available for req in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name]
+            ):
+                needed.extend(CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name])
     needed.extend(option for option in OPTIONAL_BRANCHES if option in available)
     return sorted(set(needed))
 
@@ -241,6 +299,9 @@ def exact_branch(arrays, name: str):
 
 
 def branch(arrays, name: str):
+    if name in TEMPORARY_TRUE_IF_MISSING and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
+        return np.ones(len(arrays), dtype=bool)
+
     if name == "ele_isTrigMatched":
         saved_match = aligned_saved_branch(arrays, "ele_isTrigMatched", "ele_pt")
         if saved_match is not None:
@@ -252,10 +313,14 @@ def branch(arrays, name: str):
 
     if name == "tau_isTight" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
         decay = exact_branch(arrays, "Tau_idDecayModeNewDMs") != 0
-        vsjet = exact_branch(arrays, "Tau_idDeepTau2018v2p5VSjet") >= 5
+        vsjet = exact_branch(arrays, "Tau_idDeepTau2018v2p5VSjet") >= 6
         vse = exact_branch(arrays, "Tau_idDeepTau2018v2p5VSe") >= 1
         vsmu = exact_branch(arrays, "Tau_idDeepTau2018v2p5VSmu") >= 1
         return decay & vsjet & vse & vsmu
+
+    if name == "trk_isFiducialECALTrack" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
+        min_dr = exact_branch(arrays, "IsoTrack_minDRToMaskedEcal")
+        return (min_dr < 0.0) | (min_dr > 0.05)
 
     if name == "trk_caloTotNoPU" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
         calo_total = exact_branch(arrays, "IsoTrack_caloEm") + exact_branch(arrays, "IsoTrack_caloHad")
@@ -263,20 +328,23 @@ def branch(arrays, name: str):
         return np.maximum(0.0, calo_total - rho * np.pi * 0.4 * 0.4)
 
     if name == "jet_isTightLepVeto" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
-        eta = np.abs(exact_branch(arrays, "Jet_eta"))
-        nehef = exact_branch(arrays, "Jet_neHEF")
-        neemef = exact_branch(arrays, "Jet_neEmEF")
-        chef = exact_branch(arrays, "Jet_chHEF")
-        chemef = exact_branch(arrays, "Jet_chEmEF")
-        muef = exact_branch(arrays, "Jet_muEF")
-        chmult = exact_branch(arrays, "Jet_chMultiplicity")
-        nemult = exact_branch(arrays, "Jet_neMultiplicity")
-        return (
-            ((nehef < 0.99) & (neemef < 0.90) & ((chmult + nemult) > 1) & (muef < 0.8) & (chef > 0.01) & (chmult > 0) & (chemef < 0.80) & (eta <= 2.6))
-            | ((nehef < 0.90) & (neemef < 0.99) & (muef < 0.8) & (chmult > 0) & (chemef < 0.80) & (eta > 2.6) & (eta <= 2.7))
-            | ((nehef < 0.99) & (neemef < 0.99) & (nemult > 1) & (eta > 2.7) & (eta <= 3.0))
-            | ((neemef < 0.4) & (nemult > 10) & (eta > 3.0) & (eta <= 5.0))
-        )
+        if all(has_exact_branch(arrays, req) for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
+            eta = np.abs(exact_branch(arrays, "Jet_eta"))
+            nehef = exact_branch(arrays, "Jet_neHEF")
+            neemef = exact_branch(arrays, "Jet_neEmEF")
+            chef = exact_branch(arrays, "Jet_chHEF")
+            chemef = exact_branch(arrays, "Jet_chEmEF")
+            muef = exact_branch(arrays, "Jet_muEF")
+            chmult = exact_branch(arrays, "Jet_chMultiplicity")
+            nemult = exact_branch(arrays, "Jet_neMultiplicity")
+            return (
+                ((nehef < 0.99) & (neemef < 0.90) & ((chmult + nemult) > 1) & (muef < 0.8) & (chef > 0.01) & (chmult > 0) & (chemef < 0.80) & (eta <= 2.6))
+                | ((nehef < 0.90) & (neemef < 0.99) & (muef < 0.8) & (chmult > 0) & (chemef < 0.80) & (eta > 2.6) & (eta <= 2.7))
+                | ((nehef < 0.99) & (neemef < 0.99) & (nemult > 1) & (eta > 2.7) & (eta <= 3.0))
+                | ((neemef < 0.4) & (nemult > 10) & (eta > 3.0) & (eta <= 5.0))
+            )
+        if has_exact_branch(arrays, "Jet_jetId"):
+            return np.bitwise_and(exact_branch(arrays, "Jet_jetId"), 4) != 0  # Jet tight lepton veto bit
 
     for option in branch_options(name):
         try:
@@ -310,18 +378,20 @@ def event_trigger_mask(arrays):
     for name in ("HLT_Ele32_WPTight_Gsf", "HLT_Ele32_WPTight_Gsf_L1DoubleEG"):
         if has_branch(arrays, name):
             masks.append(branch(arrays, name))
-    if masks:
-        out = masks[0]
-        for mask in masks[1:]:
-            out = out | mask
-        return out
-    return ak.ones_like(ak.num(branch(arrays, "ele_pt"), axis=1), dtype=bool)
+    if not masks:
+        raise KeyError("Required EGamma trigger branch HLT_Ele32_WPTight_Gsf not found.")
+    out = masks[0]
+    for mask in masks[1:]:
+        out = out | mask
+    return out
 
 
 def event_filter_mask(arrays, name: str):
-    if has_branch(arrays, name):
-        return branch(arrays, name)
-    return ak.ones_like(ak.num(branch(arrays, "ele_pt"), axis=1), dtype=bool)
+    return branch(arrays, name)
+
+
+def event_preselection_mask(arrays):
+    return event_trigger_mask(arrays) & branch(arrays, "passMETFilters") & branch(arrays, "passJvmFilter")
 
 
 def delta_phi(phi1, phi2):
@@ -331,7 +401,7 @@ def delta_phi(phi1, phi2):
 def electron_trigger_match_mask(arrays):
     trig_fields = ("TrigObj_id", "TrigObj_filterBits", "TrigObj_eta", "TrigObj_phi")
     if not all(has_branch(arrays, name) for name in trig_fields):
-        return ak.ones_like(branch(arrays, "ele_pt"), dtype=bool)
+        raise KeyError(missing_branch_message("ele_isTrigMatched"))
 
     trig_mask = (np.abs(branch(arrays, "TrigObj_id")) == ELECTRON_TRIGOBJ_ID) & (
         np.bitwise_and(branch(arrays, "TrigObj_filterBits"), 1 << ELECTRON_WPTIGHT_TRACKISO_FILTER_BIT) != 0
@@ -342,7 +412,7 @@ def electron_trigger_match_mask(arrays):
     ]
     ele, obj = ak.unzip(ak.cartesian([electrons, trig_objs], nested=True))
     dr = np.sqrt((ele.eta - obj.eta) ** 2 + delta_phi(ele.phi, obj.phi) ** 2)
-    return ak.fill_none(ak.any(dr < ELECTRON_TRIGGER_MATCHING_DR, axis=2), False) #electron is trigger matched.
+    return ak.fill_none(ak.any(dr < ELECTRON_TRIGGER_MATCHING_DR, axis=2), False)  # electron is trigger matched.
 
 
 def min_delta_r_mask(arrays, prefix: str, min_dr: float, obj_mask=None):
@@ -397,14 +467,43 @@ def good_jet_mask(arrays, jet_pt_min: float, jet_eta_max: float):
 
 
 def good_tau_mask(arrays):
+    tau_id_branches = (
+        "Tau_idDecayModeNewDMs",
+        "Tau_idDeepTau2018v2p5VSjet",
+        "Tau_idDeepTau2018v2p5VSe",
+        "Tau_idDeepTau2018v2p5VSmu",
+    )
+    if all(has_exact_branch(arrays, name) for name in tau_id_branches):
+        return (
+            (exact_branch(arrays, "Tau_idDecayModeNewDMs") != 0)
+            & (exact_branch(arrays, "Tau_idDeepTau2018v2p5VSjet") >= 6)
+            & (exact_branch(arrays, "Tau_idDeepTau2018v2p5VSe") >= 1)
+            & (exact_branch(arrays, "Tau_idDeepTau2018v2p5VSmu") >= 1)
+        )
     return branch(arrays, "tau_isTight")
 
 
+def electron_sc_eta(arrays):
+    return branch(arrays, "ele_eta") + branch(arrays, "ele_deltaEtaSC")
+
+
+def electron_dxy_mask(arrays):
+    barrel = np.abs(electron_sc_eta(arrays)) <= 1.479
+    return (barrel & (np.abs(branch(arrays, "ele_dxy")) < 0.05)) | (~barrel & (np.abs(branch(arrays, "ele_dxy")) < 0.10))
+
+
+def electron_dz_mask(arrays):
+    barrel = np.abs(electron_sc_eta(arrays)) <= 1.479
+    return (barrel & (np.abs(branch(arrays, "ele_dz")) < 0.10)) | (~barrel & (np.abs(branch(arrays, "ele_dz")) < 0.20))
+
+
 def electron_tag_mask(arrays):
-    mask = branch(arrays, "ele_isTrigMatched")
-    mask = mask & (branch(arrays, "ele_pt") > 35.0)
+    mask = branch(arrays, "ele_pt") > 32.0
     mask = mask & (np.abs(branch(arrays, "ele_eta")) < 2.1)
     mask = mask & branch(arrays, "ele_isTight")
+    mask = mask & electron_dxy_mask(arrays)
+    mask = mask & electron_dz_mask(arrays)
+    mask = mask & branch(arrays, "ele_isTrigMatched")
     return mask
 
 
@@ -418,6 +517,7 @@ def probe_track_denominator_mask(
     mask = branch(arrays, "trk_pt") > 30
     mask = mask & (np.abs(branch(arrays, "trk_eta")) < 2.1)
     mask = mask & fiducial_eta_mask(arrays)
+    mask = mask & branch(arrays, "trk_isFiducialECALTrack")
     if apply_water_leak_veto:
         mask = mask & water_leak_mask(arrays)
     mask = mask & (
@@ -491,14 +591,19 @@ def make_tp_cutflow(
     add("event passes MET filters", event_filter_mask(arrays, "passMETFilters"))
     add("event passes jet veto map filter", event_filter_mask(arrays, "passJvmFilter"))
 
-    ele = branch(arrays, "ele_isTrigMatched")
-    ele = ele & (branch(arrays, "ele_pt") > 35.0)
-    add(">= 1 electrons pT > 35 GeV", ak.any(ele, axis=1))
+    ele = branch(arrays, "ele_pt") > 32.0
+    add(">= 1 electrons pT > 32 GeV", ak.any(ele, axis=1))
     ele = ele & (np.abs(branch(arrays, "ele_eta")) < 2.1)
     add(">= 1 electrons |eta| < 2.1", ak.any(ele, axis=1))
     ele = ele & branch(arrays, "ele_isTight")
     add(">= 1 electrons passing tight electron ID", ak.any(ele, axis=1))
-    add("exactly one passing electron chosen randomly", ak.any(ele, axis=1))
+    ele = ele & electron_dxy_mask(arrays)
+    add(">= 1 electrons passing EB/EE dxy requirement", ak.any(ele, axis=1))
+    ele = ele & electron_dz_mask(arrays)
+    add(">= 1 electrons passing EB/EE dz requirement", ak.any(ele, axis=1))
+    ele = ele & branch(arrays, "ele_isTrigMatched")
+    add(">= 1 electrons matched to trigger object", ak.any(ele, axis=1))
+    add(">= 1 passing electron tag", ak.any(ele, axis=1))
 
     trk = branch(arrays, "trk_pt") > 30
     add(">= 1 tracks pT > 30 GeV", ak.any(trk, axis=1))
@@ -511,6 +616,8 @@ def make_tp_cutflow(
     add(">= 1 tracks |eta| < 1.42 OR |eta| > 1.65", ak.any(trk, axis=1))
     trk = trk & ((np.abs(trk_eta) < 1.55) | (np.abs(trk_eta) > 1.85))
     add(">= 1 tracks |eta| < 1.55 OR |eta| > 1.85", ak.any(trk, axis=1))
+    trk = trk & branch(arrays, "trk_isFiducialECALTrack")
+    add(">= 1 tracks min DeltaRtrack,noisy/dead ECAL channel > 0.05", ak.any(trk, axis=1))
     if apply_water_leak_veto:
         trk = trk & water_leak_mask(arrays)
         add(">= 1 tracks eta < 0 OR eta > 1.42 OR phi < 2.7", ak.any(trk, axis=1))
@@ -549,7 +656,7 @@ def make_tp_cutflow(
     add(">= 1 tracks min DeltaRtrack,muon > 0.15", ak.any(trk, axis=1))
     trk = trk & min_delta_r_mask(arrays, "tau", 0.15, obj_mask=good_tau_mask(arrays))
     add(">= 1 tracks min DeltaRtrack,had. tau > 0.15", ak.any(trk, axis=1))
-    add("exactly one passing track chosen randomly", ak.any(trk, axis=1))
+    add(">= 1 passing probe track before layer selection", ak.any(trk, axis=1))
 
     trk = trk & layer_mask(arrays, layer)
     electrons = build_electron_vectors(arrays, ele)
@@ -557,9 +664,9 @@ def make_tp_cutflow(
     trk_obj, ele_obj = ak.unzip(ak.cartesian([tracks, electrons], nested=True))
     mass = (trk_obj + ele_obj).mass
     z_window = (mass > Z_MASS - 10) & (mass < Z_MASS + 10)
-    add("= 1 track-electron pairs |Mtrack,electron - MZ| < 10 GeV", any_pair_per_event(z_window))
+    add(">= 1 track-electron pairs |Mtrack,electron - MZ| < 10 GeV", any_pair_per_event(z_window))
     os_pair = z_window & (trk_obj.charge * ele_obj.charge < 0)
-    add("= 1 track-electron pairs qtrack * qelectron < 0", any_pair_per_event(os_pair))
+    add(">= 1 track-electron pairs qtrack * qelectron < 0", any_pair_per_event(os_pair))
     add(f">= 1 track nlayers >= 4 ({layer})", any_pair_per_event(os_pair))
     return cutflow
 
@@ -571,6 +678,7 @@ def count_pveto_pairs(
     jet_eta_max: float = 4.5,
     apply_water_leak_veto: bool = False,
 ) -> dict[str, float]:
+    arrays = arrays[event_preselection_mask(arrays)]
     ele = electron_tag_mask(arrays)
     trk = probe_track_denominator_mask(
         arrays,
