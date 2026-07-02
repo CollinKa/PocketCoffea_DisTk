@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Iterable
@@ -17,6 +18,100 @@ LAYERS = ("NLayers4", "NLayers5", "NLayers6plus", "combinedBins")
 MUON_TRIGGER_MATCHING_DR = 0.3
 MUON_TRIGOBJ_ID = 13
 MUON_ISOMU24_FILTER_BIT = 3  #matched to muonTriggerFilterNameTag: hltL3crIsoL1*SingleMu*IsoFiltered0p08 & hltL3crIsoL1*SingleMu*IsoFiltered
+JET_VETO_MODES = ("pocketcoffea", "saved", "none")
+JET_VETO_CONFIGS = {
+    "2022_preEE": {
+        "file": "/cvmfs/cms.cern.ch/rsync/cms-nanoAOD/jsonpog-integration/POG/JME/2022_Summer22/jetvetomaps.json.gz",
+        "name": "Summer22_23Sep2023_RunCD_V1",
+        "nano_version": 12,
+    },
+    "2022_postEE": {
+        "file": "/cvmfs/cms.cern.ch/rsync/cms-nanoAOD/jsonpog-integration/POG/JME/2022_Summer22EE/jetvetomaps.json.gz",
+        "name": "Summer22EE_23Sep2023_RunEFG_V1",
+        "nano_version": 12,
+    },
+    "2023_preBPix": {
+        "file": "/cvmfs/cms.cern.ch/rsync/cms-nanoAOD/jsonpog-integration/POG/JME/2023_Summer23/jetvetomaps.json.gz",
+        "name": "Summer23Prompt23_RunC_V1",
+        "nano_version": 12,
+    },
+    "2023_postBPix": {
+        "file": "/cvmfs/cms.cern.ch/rsync/cms-nanoAOD/jsonpog-integration/POG/JME/2023_Summer23BPix/jetvetomaps.json.gz",
+        "name": "Summer23BPixPrompt23_RunD_V1",
+        "nano_version": 12,
+    },
+    "2024": {
+        "file": "/cvmfs/cms.cern.ch/rsync/cms-nanoAOD/jsonpog-integration/POG/JME/2024_Summer24/jetvetomaps.json.gz",
+        "name": "Summer24Prompt24_RunBCDEFGHI_V1",
+        "nano_version": 15,
+        "jet_id_file": "/cvmfs/cms.cern.ch/rsync/cms-nanoAOD/jsonpog-integration/POG/JME/2024_Summer24/jetid.json.gz",
+        "jet_algo": "AK4PUPPI",
+    },
+}
+JET_VETO_MODE = "pocketcoffea"
+JET_VETO_YEAR = None
+JET_VETO_FILE = None
+JET_VETO_NAME = None
+POCKETCOFFEA_JET_VETO_BASE_BRANCHES = (
+    "Jet_pt",
+    "Jet_eta",
+    "Jet_phi",
+    "Jet_neEmEF",
+    "Jet_chEmEF",
+)
+POCKETCOFFEA_JET_VETO_V12_BRANCHES = POCKETCOFFEA_JET_VETO_BASE_BRANCHES + (
+    "Jet_jetId",
+    "Jet_neHEF",
+    "Jet_muEF",
+)
+POCKETCOFFEA_JET_VETO_V15_BRANCHES = POCKETCOFFEA_JET_VETO_BASE_BRANCHES + (
+    "Jet_chHEF",
+    "Jet_neHEF",
+    "Jet_muEF",
+    "Jet_chMultiplicity",
+    "Jet_neMultiplicity",
+)
+
+
+def configure_jet_veto(
+    mode: str = "pocketcoffea",
+    year: str | None = None,
+    veto_map_file: str | None = None,
+    veto_map_name: str | None = None,
+) -> None:
+    """Configure the event-level jet veto map handling for this process."""
+    global JET_VETO_MODE, JET_VETO_YEAR, JET_VETO_FILE, JET_VETO_NAME
+    if mode not in JET_VETO_MODES:
+        raise ValueError(f"Unknown jet veto mode {mode!r}; choose one of {JET_VETO_MODES}")
+    if year is not None and year not in JET_VETO_CONFIGS:
+        raise ValueError(
+            f"Unknown jet veto year {year!r}; choose one of {tuple(JET_VETO_CONFIGS)}"
+        )
+    JET_VETO_MODE = mode
+    JET_VETO_YEAR = year
+    JET_VETO_FILE = veto_map_file
+    JET_VETO_NAME = veto_map_name
+
+
+def current_jet_veto_config() -> dict[str, object] | None:
+    if JET_VETO_YEAR is None:
+        return None
+    config = dict(JET_VETO_CONFIGS[JET_VETO_YEAR])
+    if JET_VETO_FILE:
+        config["file"] = JET_VETO_FILE
+    if JET_VETO_NAME:
+        config["name"] = JET_VETO_NAME
+    return config
+
+
+def jet_veto_config() -> dict[str, str]:
+    config = current_jet_veto_config()
+    return {
+        "mode": JET_VETO_MODE,
+        "year": "" if JET_VETO_YEAR is None else JET_VETO_YEAR,
+        "file": "" if config is None else str(config["file"]),
+        "name": "" if config is None else str(config["name"]),
+    }
 
 
 # Canonical Pveto names are kept in the analysis code.  The aliases let the same
@@ -25,6 +120,7 @@ BRANCH_ALIASES = {
     "metNoMu_pt": ("MetNoMu_pt",),
     "metNoMu_phi": ("MetNoMu_phi",),
     "passMETFilters": ("Flag_METFilters",),
+    "passJvmFilter": ("jetVeto2022", "passJetVeto2022"),
     "muon_isTrigMatched": ("Muon_isTrigMatched",),
     "muon_pfRelIso04_dBeta": ("Muon_pfRelIso04_all",),
     "tau_eta": ("Tau_eta",),
@@ -128,13 +224,6 @@ PVETO_BRANCHES = [
 
 REQUIRED_BRANCHES = tuple(PVETO_BRANCHES)
 
-# FIXME(2026-07-02): The current v1.0.0-pre Run2022 C/D customized NanoAOD
-# lacks the saved jet-veto-map event decision (passJvmFilter/jetVeto2022).
-# Treat it as all-true only for temporary validation; strict Run 3 replication
-# needs this branch saved during NanoAOD production or an explicitly documented
-# approximate JVM recomputation from Jet_* branches.
-TEMPORARY_TRUE_IF_MISSING = {"passJvmFilter"}
-
 BRANCH_NOTES = {
     "trk_caloTotNoPU": (
         "For OSUNano inputs this is reconstructed from IsoTrack_caloEm, IsoTrack_caloHad, "
@@ -171,11 +260,11 @@ BRANCH_NOTES = {
         "For central-like NanoAOD inputs this maps to Flag_METFilters."
     ),
     "passJvmFilter": (
-        "FIXME(2026-07-02): current v1.0.0-pre Run2022 C/D customized NanoAOD "
-        "does not contain the saved jet-veto-map event branch. Coffee temporarily "
-        "treats missing passJvmFilter as all true so validation can proceed; strict "
-        "Run 3 replication requires remaking NanoAOD with passJvmFilter/jetVeto2022 "
-        "or using an explicitly documented approximate JVM recomputation."
+        "For Run 3 data Coffee first reads a saved passJvmFilter/jetVeto2022 branch "
+        "if present. If it is absent, run with --jet-veto-year set to one of "
+        f"{tuple(JET_VETO_CONFIGS)} so the analysis computes the PocketCoffea/JERC "
+        "correctionlib jet-veto-map decision from NanoAOD Jet branches. Use "
+        "--disable-jet-veto-map only for explicitly non-strict debugging."
     ),
     "Electron_cutBased": (
         "Electron_cutBased is required to apply the Run 3 loose-electron object mask "
@@ -229,18 +318,28 @@ def has_exact_branch(arrays, name: str) -> bool:
 
 
 def has_branch(arrays, name: str) -> bool:
-    if name in TEMPORARY_TRUE_IF_MISSING:
-        return True
+    if name == "passJvmFilter":
+        if JET_VETO_MODE == "none":
+            return True
+        if any(has_exact_branch(arrays, option) for option in branch_options(name)):
+            return True
+        return JET_VETO_MODE == "pocketcoffea" and can_compute_pocketcoffea_jvm_arrays(arrays)
     if any(has_exact_branch(arrays, option) for option in branch_options(name)):
         return True
     if name in COMPUTED_BRANCH_REQUIREMENTS:
         return all(has_exact_branch(arrays, req) for req in COMPUTED_BRANCH_REQUIREMENTS[name])
+    if name in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS:
+        return all(has_exact_branch(arrays, req) for req in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name])
     return False
 
 
 def available_has_branch(available: set[str], name: str) -> bool:
-    if name in TEMPORARY_TRUE_IF_MISSING:
-        return True
+    if name == "passJvmFilter":
+        if JET_VETO_MODE == "none":
+            return True
+        if any(option in available for option in branch_options(name)):
+            return True
+        return JET_VETO_MODE == "pocketcoffea" and can_compute_pocketcoffea_jvm_available(available)
     if any(option in available for option in branch_options(name)):
         return True
     if name in COMPUTED_BRANCH_REQUIREMENTS and all(req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
@@ -255,6 +354,18 @@ def available_has_branch(available: set[str], name: str) -> bool:
 def input_branches_for_available(available: set[str]) -> list[str]:
     needed = []
     for name in PVETO_BRANCHES:
+        if name == "passJvmFilter":
+            if JET_VETO_MODE == "none":
+                continue
+            for option in branch_options(name):
+                if option in available:
+                    needed.append(option)
+                    break
+            else:
+                if JET_VETO_MODE == "pocketcoffea" and can_compute_pocketcoffea_jvm_available(available):
+                    needed.extend(pocketcoffea_jvm_required_branches())
+            continue
+
         if name == "tau_isTight" and all(req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
             needed.extend(COMPUTED_BRANCH_REQUIREMENTS[name])
             continue
@@ -293,10 +404,124 @@ def exact_branch(arrays, name: str):
     raise KeyError(name)
 
 
+def pocketcoffea_jvm_required_branches() -> tuple[str, ...]:
+    config = current_jet_veto_config()
+    if config is None:
+        return ()
+    if int(config["nano_version"]) >= 15:
+        return POCKETCOFFEA_JET_VETO_V15_BRANCHES
+    return POCKETCOFFEA_JET_VETO_V12_BRANCHES
+
+
+def can_compute_pocketcoffea_jvm_available(available: set[str]) -> bool:
+    requirements = pocketcoffea_jvm_required_branches()
+    return bool(requirements) and all(req in available for req in requirements)
+
+
+def can_compute_pocketcoffea_jvm_arrays(arrays) -> bool:
+    requirements = pocketcoffea_jvm_required_branches()
+    return bool(requirements) and all(has_exact_branch(arrays, req) for req in requirements)
+
+
+@lru_cache(maxsize=16)
+def load_correction(path: str, name: str):
+    import correctionlib
+
+    return correctionlib.CorrectionSet.from_file(path)[name]
+
+
+def compute_pocketcoffea_jet_id(arrays):
+    config = current_jet_veto_config()
+    if config is None:
+        raise RuntimeError("--jet-veto-year is required to compute the JERC jet veto map.")
+
+    eta = np.abs(branch(arrays, "Jet_eta"))
+    if int(config["nano_version"]) < 15:
+        jet_id = branch(arrays, "Jet_jetId")
+        pass_tight = ak.where(
+            eta <= 2.7,
+            np.bitwise_and(jet_id, 1 << 1) != 0,
+            ak.where(
+                (eta > 2.7) & (eta <= 3.0),
+                (np.bitwise_and(jet_id, 1 << 1) != 0) & (branch(arrays, "Jet_neHEF") < 0.99),
+                (np.bitwise_and(jet_id, 1 << 1) != 0) & (branch(arrays, "Jet_neEmEF") < 0.4),
+            ),
+        )
+        pass_tight_lep_veto = ak.where(
+            eta <= 2.7,
+            pass_tight & (branch(arrays, "Jet_muEF") < 0.8) & (branch(arrays, "Jet_chEmEF") < 0.8),
+            pass_tight,
+        )
+        return pass_tight * (1 << 1) | pass_tight_lep_veto * (1 << 2)
+
+    counts = ak.num(branch(arrays, "Jet_eta"), axis=1)
+    flat = {
+        "eta": np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "Jet_eta"), axis=1))),
+        "chHEF": np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "Jet_chHEF"), axis=1))),
+        "neHEF": np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "Jet_neHEF"), axis=1))),
+        "chEmEF": np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "Jet_chEmEF"), axis=1))),
+        "neEmEF": np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "Jet_neEmEF"), axis=1))),
+        "muEF": np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "Jet_muEF"), axis=1))),
+        "chMultiplicity": np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "Jet_chMultiplicity"), axis=1))),
+        "neMultiplicity": np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "Jet_neMultiplicity"), axis=1))),
+    }
+    flat["multiplicity"] = flat["chMultiplicity"] + flat["neMultiplicity"]
+    if len(flat["eta"]) == 0:
+        return ak.unflatten(np.array([], dtype=np.int32), counts)
+
+    jet_algo = str(config.get("jet_algo", "AK4PUPPI"))
+    jet_id_file = str(config["jet_id_file"])
+    tight = load_correction(jet_id_file, f"{jet_algo}_Tight")
+    tight_lep_veto = load_correction(jet_id_file, f"{jet_algo}_TightLeptonVeto")
+    tight_value = tight.evaluate(*[flat[item.name] for item in tight.inputs]) * (1 << 1)
+    tight_lep_veto_value = tight_lep_veto.evaluate(
+        *[flat[item.name] for item in tight_lep_veto.inputs]
+    ) * (1 << 2)
+    return ak.unflatten(tight_value + tight_lep_veto_value, counts)
+
+
+def lookup_pocketcoffea_jet_veto_map(eta, phi):
+    config = current_jet_veto_config()
+    if config is None:
+        raise RuntimeError("--jet-veto-year is required to compute the JERC jet veto map.")
+    counts = ak.num(eta, axis=1)
+    flat_eta = np.asarray(ak.to_numpy(ak.flatten(eta, axis=1)))
+    flat_phi = np.asarray(ak.to_numpy(ak.flatten(phi, axis=1)))
+    if len(flat_eta) == 0:
+        return ak.unflatten(np.array([], dtype=np.float32), counts)
+    corr = load_correction(str(config["file"]), str(config["name"]))
+    flat_phi = np.clip(flat_phi, -3.14159, 3.14159)
+    values = corr.evaluate("jetvetomap", flat_eta, flat_phi)
+    return ak.unflatten(values, counts)
+
+
+def compute_pocketcoffea_pass_jvm(arrays):
+    jet_id_corrected = compute_pocketcoffea_jet_id(arrays)
+    mask_for_veto_map = (
+        (jet_id_corrected >= 6)
+        & (np.abs(branch(arrays, "Jet_eta")) < 5.19)
+        & (branch(arrays, "Jet_pt") > 15.0)
+        & ((branch(arrays, "Jet_neEmEF") + branch(arrays, "Jet_chEmEF")) < 0.9)
+    )
+    veto_map_value = lookup_pocketcoffea_jet_veto_map(
+        branch(arrays, "Jet_eta")[mask_for_veto_map],
+        branch(arrays, "Jet_phi")[mask_for_veto_map],
+    )
+    event_mask = ak.sum(veto_map_value, axis=-1) == 0
+    return ak.where(ak.is_none(event_mask), False, event_mask)
+
+
 def branch(arrays, name: str):
     """Read a canonical DisTkMuonPveto branch, with OSUNano aliases if needed."""
-    if name in TEMPORARY_TRUE_IF_MISSING and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
-        return np.ones(len(arrays), dtype=bool)
+    if name == "passJvmFilter":
+        if JET_VETO_MODE == "none":
+            return np.ones(len(arrays), dtype=bool)
+        for option in branch_options(name):
+            if has_exact_branch(arrays, option):
+                return exact_branch(arrays, option)
+        if JET_VETO_MODE == "pocketcoffea":
+            return compute_pocketcoffea_pass_jvm(arrays)
+        raise KeyError(missing_branch_message(name))
 
     if name == "tau_isTight" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
         decay = exact_branch(arrays, "Tau_idDecayModeNewDMs") != 0
@@ -689,7 +914,12 @@ def process_arrays(arrays, layer: str) -> dict:
 
 
 def make_payload(input_files: Iterable[str], tree: str, layer_results: dict) -> dict:
-    payload = {"input_files": list(input_files), "tree": tree, "layers": {}}
+    payload = {
+        "input_files": list(input_files),
+        "tree": tree,
+        "jet_veto": jet_veto_config(),
+        "layers": {},
+    }
     for layer, result in layer_results.items():
         payload["layers"][layer] = {
             "cutflow": dict(result["cutflow"]),

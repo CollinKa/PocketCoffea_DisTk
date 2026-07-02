@@ -20,6 +20,8 @@ from disTkMuonPveto_core import (
     missing_branch_message,
     missing_required_for_available,
     make_payload,
+    configure_jet_veto,
+    JET_VETO_CONFIGS,
     normalize_layers,
     process_arrays,
 )
@@ -120,9 +122,39 @@ def main() -> None:
         choices=["NLayers4", "NLayers5", "NLayers6plus", "combinedBins", "all"],
     )
     parser.add_argument("--chunk-size", default="100 MB")
+    parser.add_argument(
+        "--jet-veto-year",
+        choices=sorted(JET_VETO_CONFIGS),
+        help=(
+            "Run 3 JERC jet-veto-map campaign to use when a saved "
+            "passJvmFilter/jetVeto2022 branch is absent."
+        ),
+    )
+    parser.add_argument(
+        "--jet-veto-map-file",
+        default=None,
+        help="Optional override for the correctionlib jetvetomaps.json.gz file.",
+    )
+    parser.add_argument(
+        "--jet-veto-map-name",
+        default=None,
+        help="Optional override for the correction name inside the jet veto map file.",
+    )
+    parser.add_argument(
+        "--disable-jet-veto-map",
+        action="store_true",
+        help="Debug-only bypass: treat the jet-veto-map row as all true.",
+    )
     parser.add_argument("--json-output", required=True)
     parser.add_argument("--output")
     args = parser.parse_args()
+
+    configure_jet_veto(
+        "none" if args.disable_jet_veto_map else "pocketcoffea",
+        args.jet_veto_year,
+        args.jet_veto_map_file,
+        args.jet_veto_map_name,
+    )
 
     files = parse_inputs(args.single_muon)
     if not files:

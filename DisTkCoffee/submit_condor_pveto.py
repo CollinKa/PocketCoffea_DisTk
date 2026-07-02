@@ -92,6 +92,16 @@ def ensure_new_dir(path: Path, overwrite: bool) -> None:
 
 def write_wrapper(path: Path, args: argparse.Namespace) -> None:
     config = channel_config(args)
+    extra_runner_args = ""
+    if args.channel == "muon":
+        if args.jet_veto_year:
+            extra_runner_args += f" \\\n    --jet-veto-year {shlex.quote(args.jet_veto_year)}"
+        if args.jet_veto_map_file:
+            extra_runner_args += f" \\\n    --jet-veto-map-file {shlex.quote(args.jet_veto_map_file)}"
+        if args.jet_veto_map_name:
+            extra_runner_args += f" \\\n    --jet-veto-map-name {shlex.quote(args.jet_veto_map_name)}"
+        if args.disable_jet_veto_map:
+            extra_runner_args += " \\\n    --disable-jet-veto-map"
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -120,7 +130,7 @@ apptainer exec \\
     {config["single_arg"]} "${{FILES[@]}}" \\
     --tree "${{TREE}}" \\
     --layers "${{LAYERS}}" \\
-    --chunk-size "${{CHUNK_SIZE}}" \\
+    --chunk-size "${{CHUNK_SIZE}}"{extra_runner_args} \\
     --json-output "${{OUT}}/pveto_summary.json" \\
     --output "${{OUT}}/pveto_summary.root"
 """
@@ -168,6 +178,10 @@ jobs: {len(splits)}
 tree: {args.tree}
 layers: {args.layers}
 chunk_size: {args.chunk_size}
+jet_veto_year: {args.jet_veto_year}
+jet_veto_map_file: {args.jet_veto_map_file}
+jet_veto_map_name: {args.jet_veto_map_name}
+disable_jet_veto_map: {args.disable_jet_veto_map}
 proxy: {args.proxy}
 image: {args.image}
 runner: {config["runner"]}
@@ -235,6 +249,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-cpus", default="1")
     parser.add_argument("--request-memory", default="4 GB")
     parser.add_argument("--request-disk", default="5 GB")
+    parser.add_argument(
+        "--jet-veto-year",
+        choices=["2022_preEE", "2022_postEE", "2023_preBPix", "2023_postBPix", "2024"],
+        help=(
+            "Run 3 JERC jet-veto-map campaign passed to the muon runner when "
+            "a saved passJvmFilter/jetVeto2022 branch is absent."
+        ),
+    )
+    parser.add_argument(
+        "--jet-veto-map-file",
+        default=None,
+        help="Optional correctionlib jetvetomaps.json.gz override passed to the muon runner.",
+    )
+    parser.add_argument(
+        "--jet-veto-map-name",
+        default=None,
+        help="Optional correction name override passed to the muon runner.",
+    )
+    parser.add_argument(
+        "--disable-jet-veto-map",
+        action="store_true",
+        help="Debug-only bypass: tell the muon runner to treat the jet-veto-map row as all true.",
+    )
     parser.add_argument("--submit", action="store_true", help="Run condor_submit after preparing the directory.")
     parser.add_argument("--overwrite", action="store_true", help="Allow reusing a non-empty condor directory.")
     return parser.parse_args()
