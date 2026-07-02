@@ -26,6 +26,7 @@ BRANCH_ALIASES = {
     "metNoMu_phi": ("MetNoMu_phi",),
     "passMETFilters": ("Flag_METFilters",),
     "muon_isTrigMatched": ("Muon_isTrigMatched",),
+    "muon_pfRelIso04_dBeta": ("Muon_pfRelIso04_all",),
     "tau_eta": ("Tau_eta",),
     "tau_phi": ("Tau_phi",),
     "tau_isTight": ("Tau_isTight",),
@@ -56,6 +57,7 @@ COMPUTED_BRANCH_REQUIREMENTS = {
     ),
     "tau_isTight": (
         "Tau_idDecayModeNewDMs",
+        "Tau_idDeepTau2018v2p5VSjet",
         "Tau_idDeepTau2018v2p5VSe",
         "Tau_idDeepTau2018v2p5VSmu",
     ),
@@ -96,8 +98,10 @@ PVETO_BRANCHES = [
     "Muon_phi",
     "Muon_charge",
     "Muon_tightId",
+    "muon_pfRelIso04_dBeta",
     "Electron_eta",
     "Electron_phi",
+    "Electron_cutBased",
     "tau_eta",
     "tau_phi",
     "tau_isTight",
@@ -124,6 +128,13 @@ PVETO_BRANCHES = [
 
 REQUIRED_BRANCHES = tuple(PVETO_BRANCHES)
 
+# FIXME(2026-07-02): The current v1.0.0-pre Run2022 C/D customized NanoAOD
+# lacks the saved jet-veto-map event decision (passJvmFilter/jetVeto2022).
+# Treat it as all-true only for temporary validation; strict Run 3 replication
+# needs this branch saved during NanoAOD production or an explicitly documented
+# approximate JVM recomputation from Jet_* branches.
+TEMPORARY_TRUE_IF_MISSING = {"passJvmFilter"}
+
 BRANCH_NOTES = {
     "trk_caloTotNoPU": (
         "For OSUNano inputs this is reconstructed from IsoTrack_caloEm, IsoTrack_caloHad, "
@@ -132,7 +143,12 @@ BRANCH_NOTES = {
     ),
     "tau_isTight": (
         "For OSUNano inputs this is read from Tau_isTight if present, otherwise "
-        "computed from decayModeNewDMs plus Run 3 DeepTau VSe/Vsmu working points."
+        "computed from decayModeNewDMs plus Run 3 DeepTau Tight VSjet, VVVLoose VSe, "
+        "and VLoose VSmu working points."
+    ),
+    "muon_pfRelIso04_dBeta": (
+        "For OSUNano inputs this maps to Muon_pfRelIso04_all, the delta-beta corrected "
+        "PF relative isolation with dR=0.4 used for the Run 3 tight-muon isolation cut."
     ),
     "trk_isFiducialECALTrack": (
         "For OSUNano inputs this is read from IsoTrack_isFiducialECALTrack if present, "
@@ -155,8 +171,15 @@ BRANCH_NOTES = {
         "For central-like NanoAOD inputs this maps to Flag_METFilters."
     ),
     "passJvmFilter": (
-        "No central NanoAOD jet-veto-map branch is available in v1.0.0-pre outputs. "
-        "For central-like NanoAOD inputs, Coffee treats this filter as passing."
+        "FIXME(2026-07-02): current v1.0.0-pre Run2022 C/D customized NanoAOD "
+        "does not contain the saved jet-veto-map event branch. Coffee temporarily "
+        "treats missing passJvmFilter as all true so validation can proceed; strict "
+        "Run 3 replication requires remaking NanoAOD with passJvmFilter/jetVeto2022 "
+        "or using an explicitly documented approximate JVM recomputation."
+    ),
+    "Electron_cutBased": (
+        "Electron_cutBased is required to apply the Run 3 loose-electron object mask "
+        "for min DeltaR(track, loose electron) > 0.15."
     ),
     "Electron_eta": (
         "Electron_eta is required for the electron-track veto. The OSUNano "
@@ -206,6 +229,8 @@ def has_exact_branch(arrays, name: str) -> bool:
 
 
 def has_branch(arrays, name: str) -> bool:
+    if name in TEMPORARY_TRUE_IF_MISSING:
+        return True
     if any(has_exact_branch(arrays, option) for option in branch_options(name)):
         return True
     if name in COMPUTED_BRANCH_REQUIREMENTS:
@@ -214,7 +239,7 @@ def has_branch(arrays, name: str) -> bool:
 
 
 def available_has_branch(available: set[str], name: str) -> bool:
-    if name == "passJvmFilter":
+    if name in TEMPORARY_TRUE_IF_MISSING:
         return True
     if any(option in available for option in branch_options(name)):
         return True
@@ -230,6 +255,10 @@ def available_has_branch(available: set[str], name: str) -> bool:
 def input_branches_for_available(available: set[str]) -> list[str]:
     needed = []
     for name in PVETO_BRANCHES:
+        if name == "tau_isTight" and all(req in available for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
+            needed.extend(COMPUTED_BRANCH_REQUIREMENTS[name])
+            continue
+
         for option in branch_options(name):
             if option in available:
                 needed.append(option)
@@ -266,14 +295,15 @@ def exact_branch(arrays, name: str):
 
 def branch(arrays, name: str):
     """Read a canonical DisTkMuonPveto branch, with OSUNano aliases if needed."""
-    if name == "passJvmFilter" and not has_exact_branch(arrays, name):
-        return ak.ones_like(branch(arrays, "metNoMu_pt"), dtype=bool)
+    if name in TEMPORARY_TRUE_IF_MISSING and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
+        return np.ones(len(arrays), dtype=bool)
 
     if name == "tau_isTight" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
         decay = exact_branch(arrays, "Tau_idDecayModeNewDMs") != 0
+        vsjet = exact_branch(arrays, "Tau_idDeepTau2018v2p5VSjet") >= 6
         vse = exact_branch(arrays, "Tau_idDeepTau2018v2p5VSe") >= 1
         vsmu = exact_branch(arrays, "Tau_idDeepTau2018v2p5VSmu") >= 1
-        return decay & vse & vsmu
+        return decay & vsjet & vse & vsmu
 
     if name == "trk_isFiducialECALTrack" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
         min_dr = exact_branch(arrays, "IsoTrack_minDRToMaskedEcal")
@@ -353,6 +383,14 @@ def trans_mass(arrays, prefix: str):
     )
 
 
+def event_preselection_mask(arrays):
+    return (
+        branch(arrays, "HLT_IsoMu24")
+        & branch(arrays, "passMETFilters")
+        & branch(arrays, "passJvmFilter")
+    )
+
+
 def muon_trigger_match_mask(arrays):
     """Replicate MattWIP muon_isTrigMatched with NanoAOD TrigObj when needed."""
     saved_match = aligned_optional_branch(arrays, "muon_isTrigMatched", "Muon_pt")
@@ -418,11 +456,16 @@ def fiducial_eta_mask(arrays):
 
 
 def muon_tag_mask(arrays):
-    mask = muon_trigger_match_mask(arrays)
-    mask = mask & (branch(arrays, "Muon_pt") > 26)
+    mask = branch(arrays, "Muon_pt") > 26
     mask = mask & (np.abs(branch(arrays, "Muon_eta")) < 2.1)
     mask = mask & branch(arrays, "Muon_tightId")
+    mask = mask & (branch(arrays, "muon_pfRelIso04_dBeta") < 0.15)
+    mask = mask & muon_trigger_match_mask(arrays)
     return mask
+
+
+def loose_electron_mask(arrays):
+    return branch(arrays, "Electron_cutBased") >= 2
 
 
 def good_jet_mask(arrays):
@@ -434,6 +477,19 @@ def good_jet_mask(arrays):
 
 
 def good_tau_mask(arrays):
+    tau_id_branches = (
+        "Tau_idDecayModeNewDMs",
+        "Tau_idDeepTau2018v2p5VSjet",
+        "Tau_idDeepTau2018v2p5VSe",
+        "Tau_idDeepTau2018v2p5VSmu",
+    )
+    if all(has_exact_branch(arrays, name) for name in tau_id_branches):
+        return (
+            (exact_branch(arrays, "Tau_idDecayModeNewDMs") != 0)
+            & (exact_branch(arrays, "Tau_idDeepTau2018v2p5VSjet") >= 6)
+            & (exact_branch(arrays, "Tau_idDeepTau2018v2p5VSe") >= 1)
+            & (exact_branch(arrays, "Tau_idDeepTau2018v2p5VSmu") >= 1)
+        )
     return branch(arrays, "tau_isTight")
 
 
@@ -454,7 +510,7 @@ def probe_track_denominator_mask(arrays, layer: str):
     mask = mask & (np.abs(branch(arrays, "trk_dz")) < 0.5)
 
     mask = mask & min_delta_r_mask(arrays, "Jet", 0.5, obj_mask=good_jet_mask(arrays))
-    mask = mask & min_delta_r_mask(arrays, "Electron", 0.15)
+    mask = mask & min_delta_r_mask(arrays, "Electron", 0.15, obj_mask=loose_electron_mask(arrays))
     mask = mask & min_delta_r_mask(arrays, "tau", 0.15, obj_mask=good_tau_mask(arrays))
     mask = mask & (branch(arrays, "trk_caloTotNoPU") < 10)
     mask = mask & layer_mask(arrays, layer)
@@ -503,15 +559,17 @@ def make_tp_cutflow(arrays, layer: str):
 
     add("input event kept by SingleMuon trigger skim", branch(arrays, "HLT_IsoMu24"))
     add("event passes MET filters", branch(arrays, "passMETFilters"))
-    add("event passes jet veto map filter", branch(arrays, "passJvmFilter"))
 
-    mu = muon_trigger_match_mask(arrays)
-    mu = mu & (branch(arrays, "Muon_pt") > 26)
+    mu = branch(arrays, "Muon_pt") > 26
     add(">= 1 muons pT > 26 GeV", ak.any(mu, axis=1))
     mu = mu & (np.abs(branch(arrays, "Muon_eta")) < 2.1)
     add(">= 1 muons |eta| < 2.1", ak.any(mu, axis=1))
     mu = mu & branch(arrays, "Muon_tightId")
     add(">= 1 muons passing tight muon ID", ak.any(mu, axis=1))
+    mu = mu & (branch(arrays, "muon_pfRelIso04_dBeta") < 0.15)
+    add(">= 1 muons PF isolation < 0.15", ak.any(mu, axis=1))
+    mu = mu & muon_trigger_match_mask(arrays)
+    add(">= 1 muons matched to trigger object", ak.any(mu, axis=1))
     add(">= 1 passing muon tag", ak.any(mu, axis=1))
 
     trk = branch(arrays, "trk_pt") > 30
@@ -551,6 +609,7 @@ def make_tp_cutflow(arrays, layer: str):
     # add(">= 1 tracks eta < 0 OR eta > 1.42 OR phi < 2.7", ak.any(trk, axis=1))
     trk = trk & min_delta_r_mask(arrays, "Jet", 0.5, obj_mask=good_jet_mask(arrays))
     add(">= 1 track-jet pairs DeltaRtrack,jet > 0.5", ak.any(trk, axis=1))
+    add("event passes jet veto map filter", branch(arrays, "passJvmFilter"))
 
     muons = build_muon_vectors(arrays, mu)
     tracks_pre_veto = build_track_vectors(arrays, trk)
@@ -558,8 +617,8 @@ def make_tp_cutflow(arrays, layer: str):
     mass = (trk_obj + mu_obj).mass
     add(">= 1 track-muon pairs Mtrack,muon > 10 GeV", any_pair_per_event(mass > 10))
 
-    trk = trk & min_delta_r_mask(arrays, "Electron", 0.15)
-    add(">= 1 tracks min DeltaRtrack,electron > 0.15", ak.any(trk, axis=1))
+    trk = trk & min_delta_r_mask(arrays, "Electron", 0.15, obj_mask=loose_electron_mask(arrays))
+    add(">= 1 tracks min DeltaRtrack,loose electron > 0.15", ak.any(trk, axis=1))
     trk = trk & min_delta_r_mask(arrays, "tau", 0.15, obj_mask=good_tau_mask(arrays))
     add(">= 1 tracks min DeltaRtrack,had. tau > 0.15", ak.any(trk, axis=1))
     trk = trk & (branch(arrays, "trk_caloTotNoPU") < 10)
@@ -582,6 +641,8 @@ def make_tp_cutflow(arrays, layer: str):
 
 
 def count_pveto_pairs(arrays, layer: str) -> dict[str, float]:
+    arrays = arrays[event_preselection_mask(arrays)]
+
     mu = muon_tag_mask(arrays)
     trk = probe_track_denominator_mask(arrays, layer)
 

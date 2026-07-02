@@ -8,6 +8,7 @@ from disTkMuonPveto_core import (
     LAYERS,
     build_muon_vectors,
     build_track_vectors,
+    event_preselection_mask,
     muon_tag_mask,
     probe_track_denominator_mask,
 )
@@ -16,7 +17,8 @@ from disTkMuonPveto_core import (
 def has_pveto_objects(events, params, **kwargs):
     """Loose event preselection used by the native PocketCoffea workflow."""
     layer = params.get("layer", "combinedBins")
-    return ak.any(muon_tag_mask(events), axis=1) & ak.any(
+    event_mask = event_preselection_mask(events)
+    return event_mask & ak.any(muon_tag_mask(events), axis=1) & ak.any(
         probe_track_denominator_mask(events, layer), axis=1
     )
 
@@ -24,11 +26,12 @@ def has_pveto_objects(events, params, **kwargs):
 def pveto_denominator_category(events, params, **kwargs):
     """Event mask for a Pveto denominator track-muon pair in one layer bin."""
     layer = params["layer"]
+    event_mask = event_preselection_mask(events)
     muons = build_muon_vectors(events, muon_tag_mask(events))
     tracks = build_track_vectors(events, probe_track_denominator_mask(events, layer))
     trk_obj, mu_obj = ak.unzip(ak.cartesian([tracks, muons], nested=True))
     pair_mask = trk_obj.charge * mu_obj.charge != 0
-    return ak.any(ak.flatten(pair_mask, axis=2), axis=1)
+    return event_mask & ak.any(ak.flatten(pair_mask, axis=2), axis=1)
 
 
 def get_has_pveto_objects_cut(layer="combinedBins"):
