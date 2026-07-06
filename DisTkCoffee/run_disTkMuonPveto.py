@@ -21,8 +21,13 @@ from disTkMuonPveto_core import (
     missing_required_for_available,
     make_payload,
     configure_jet_veto,
+    configure_fiducial_maps,
+    configure_missing_hits,
+    default_fiducial_map_paths,
     JET_VETO_CONFIGS,
     normalize_layers,
+    ERA_TO_MISSING_HITS_PERIOD,
+    MISSING_HITS_CORRECTIONS,
     process_arrays,
 )
 
@@ -116,6 +121,7 @@ def main() -> None:
     )
     parser.add_argument("--single-muon", nargs="+", required=True)
     parser.add_argument("--tree", default="Events")
+    parser.add_argument("--era", choices=("C", "D", "E", "F", "G"), default="C")
     parser.add_argument(
         "--layers",
         default="all",
@@ -145,6 +151,12 @@ def main() -> None:
         action="store_true",
         help="Debug-only bypass: treat the jet-veto-map row as all true.",
     )
+    parser.add_argument("--electron-fiducial-map", help="Override electron fiducial ROOT map.")
+    parser.add_argument("--muon-fiducial-map", help="Override muon fiducial ROOT map.")
+    parser.add_argument("--fiducial-threshold", type=float, default=0.0)
+    parser.add_argument("--disable-fiducial-maps", action="store_true", help="Debug-only bypass: treat electron/muon fiducial maps as all true.")
+    parser.add_argument("--missing-hits-mode", choices=("saved", "stochastic"), default="saved")
+    parser.add_argument("--missing-hits-period", choices=tuple(MISSING_HITS_CORRECTIONS), help="Override era-derived missing-hit correction period.")
     parser.add_argument("--json-output", required=True)
     parser.add_argument("--output")
     args = parser.parse_args()
@@ -154,6 +166,18 @@ def main() -> None:
         args.jet_veto_year,
         args.jet_veto_map_file,
         args.jet_veto_map_name,
+    )
+    if args.disable_fiducial_maps:
+        electron_map = None
+        muon_map = None
+    else:
+        default_electron_map, default_muon_map = default_fiducial_map_paths(args.era)
+        electron_map = args.electron_fiducial_map or str(default_electron_map)
+        muon_map = args.muon_fiducial_map or str(default_muon_map)
+    configure_fiducial_maps(electron_map, muon_map, args.fiducial_threshold)
+    configure_missing_hits(
+        args.missing_hits_mode,
+        args.missing_hits_period or ERA_TO_MISSING_HITS_PERIOD[args.era],
     )
 
     files = parse_inputs(args.single_muon)

@@ -94,6 +94,8 @@ def write_wrapper(path: Path, args: argparse.Namespace) -> None:
     config = channel_config(args)
     extra_runner_args = ""
     if args.channel == "muon":
+        if args.era:
+            extra_runner_args += f" \\\n    --era {shlex.quote(args.era)}"
         if args.jet_veto_year:
             extra_runner_args += f" \\\n    --jet-veto-year {shlex.quote(args.jet_veto_year)}"
         if args.jet_veto_map_file:
@@ -102,6 +104,18 @@ def write_wrapper(path: Path, args: argparse.Namespace) -> None:
             extra_runner_args += f" \\\n    --jet-veto-map-name {shlex.quote(args.jet_veto_map_name)}"
         if args.disable_jet_veto_map:
             extra_runner_args += " \\\n    --disable-jet-veto-map"
+        if args.electron_fiducial_map:
+            extra_runner_args += f" \\\n    --electron-fiducial-map {shlex.quote(args.electron_fiducial_map)}"
+        if args.muon_fiducial_map:
+            extra_runner_args += f" \\\n    --muon-fiducial-map {shlex.quote(args.muon_fiducial_map)}"
+        if args.fiducial_threshold is not None:
+            extra_runner_args += f" \\\n    --fiducial-threshold {args.fiducial_threshold}"
+        if args.disable_fiducial_maps:
+            extra_runner_args += " \\\n    --disable-fiducial-maps"
+        if args.missing_hits_mode:
+            extra_runner_args += f" \\\n    --missing-hits-mode {shlex.quote(args.missing_hits_mode)}"
+        if args.missing_hits_period:
+            extra_runner_args += f" \\\n    --missing-hits-period {shlex.quote(args.missing_hits_period)}"
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -249,6 +263,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-cpus", default="1")
     parser.add_argument("--request-memory", default="4 GB")
     parser.add_argument("--request-disk", default="5 GB")
+    parser.add_argument("--era", choices=("C", "D", "E", "F", "G"), default="C")
     parser.add_argument(
         "--jet-veto-year",
         choices=["2022_preEE", "2022_postEE", "2023_preBPix", "2023_postBPix", "2024"],
@@ -272,6 +287,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Debug-only bypass: tell the muon runner to treat the jet-veto-map row as all true.",
     )
+    parser.add_argument("--electron-fiducial-map", help="Override electron fiducial ROOT map passed to the muon runner.")
+    parser.add_argument("--muon-fiducial-map", help="Override muon fiducial ROOT map passed to the muon runner.")
+    parser.add_argument("--fiducial-threshold", type=float, default=0.0)
+    parser.add_argument("--disable-fiducial-maps", action="store_true", help="Debug-only bypass: treat electron/muon fiducial maps as all true.")
+    parser.add_argument("--missing-hits-mode", choices=("saved", "stochastic"), default="saved")
+    parser.add_argument("--missing-hits-period", choices=("2022CD", "2022EFG"), help="Override era-derived missing-hit correction period passed to the muon runner.")
     parser.add_argument("--submit", action="store_true", help="Run condor_submit after preparing the directory.")
     parser.add_argument("--overwrite", action="store_true", help="Allow reusing a non-empty condor directory.")
     return parser.parse_args()

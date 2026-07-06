@@ -5,10 +5,12 @@ from functools import lru_cache
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Iterable
+from pathlib import Path
 
 import awkward as ak
 import numpy as np
 import vector
+import uproot
 
 vector.register_awkward()
 
@@ -17,6 +19,8 @@ Z_MASS = 91.1876
 LAYERS = ("NLayers4", "NLayers5", "NLayers6plus", "combinedBins")
 MUON_TRIGGER_MATCHING_DR = 0.3
 MUON_TRIGOBJ_ID = 13
+SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR = SCRIPT_DIR / "data"
 MUON_ISOMU24_FILTER_BIT = 3  #matched to muonTriggerFilterNameTag: hltL3crIsoL1*SingleMu*IsoFiltered0p08 & hltL3crIsoL1*SingleMu*IsoFiltered
 JET_VETO_MODES = ("pocketcoffea", "saved", "none")
 JET_VETO_CONFIGS = {
@@ -72,6 +76,61 @@ POCKETCOFFEA_JET_VETO_V15_BRANCHES = POCKETCOFFEA_JET_VETO_BASE_BRANCHES + (
     "Jet_neMultiplicity",
 )
 
+ERA_TO_MISSING_HITS_PERIOD = {
+    "C": "2022CD",
+    "D": "2022CD",
+    "E": "2022EFG",
+    "F": "2022EFG",
+    "G": "2022EFG",
+}
+
+MISSING_HITS_CORRECTIONS = {
+    "2022CD": {
+        "dropTOBProbability": 0.000424052,
+        "preTOBDropHitInefficiency": 3.230738793e-10,
+        "postTOBDropHitInefficiency": 0.786001157,
+        "hitInefficiency": 0.003203431,
+    },
+    "2022EFG": {
+        "dropTOBProbability": 0.000665108,
+        "preTOBDropHitInefficiency": 0.003683874,
+        "postTOBDropHitInefficiency": 0.779060071,
+        "hitInefficiency": 0.005060125,
+    },
+}
+MISSING_HITS_MODES = ("saved", "stochastic")
+MISSING_HITS_MODE = "saved"
+MISSING_HITS_PERIOD = "2022CD"
+STOCHASTIC_MISSING_HIT_BRANCHES = (
+    "event",
+    "trk_hp_stripLayersWithMeasurement",
+    "trk_hp_stripTOBLayersWithMeasurement",
+)
+
+V1_MIN_TRACK_PT = 20.0
+V1_MAX_REL_TRACK_ISO = -1.0
+V1_CALO_CONE_DR = 0.5
+FIDUCIAL_THRESHOLD = 0.0
+ELECTRON_FIDUCIAL_MAP: str | None = None
+MUON_FIDUCIAL_MAP: str | None = None
+
+
+def default_fiducial_map_paths(era: str) -> tuple[Path, Path]:
+    return (
+        DATA_DIR / f"electronFiducialMap_2022{era}_data.root",
+        DATA_DIR / f"muonFiducialMap_2022{era}_data.root",
+    )
+
+
+def configure_missing_hits(mode: str = "saved", period: str = "2022CD") -> None:
+    global MISSING_HITS_MODE, MISSING_HITS_PERIOD
+    if mode not in MISSING_HITS_MODES:
+        raise ValueError(f"Unknown missing-hits mode {mode!r}; choose one of {MISSING_HITS_MODES}")
+    if period not in MISSING_HITS_CORRECTIONS:
+        raise ValueError(f"Unknown missing-hits period {period!r}; choose one of {tuple(MISSING_HITS_CORRECTIONS)}")
+    MISSING_HITS_MODE = mode
+    MISSING_HITS_PERIOD = period
+
 
 def configure_jet_veto(
     mode: str = "pocketcoffea",
@@ -114,9 +173,25 @@ def jet_veto_config() -> dict[str, str]:
     }
 
 
+def configure_fiducial_maps(
+    electron_map: str | None = None,
+    muon_map: str | None = None,
+    threshold: float = 0.0,
+) -> None:
+    global ELECTRON_FIDUCIAL_MAP, MUON_FIDUCIAL_MAP, FIDUCIAL_THRESHOLD
+    ELECTRON_FIDUCIAL_MAP = None if electron_map is None else str(electron_map)
+    MUON_FIDUCIAL_MAP = None if muon_map is None else str(muon_map)
+    FIDUCIAL_THRESHOLD = float(threshold)
+    if ELECTRON_FIDUCIAL_MAP is not None:
+        load_fiducial_map(ELECTRON_FIDUCIAL_MAP, FIDUCIAL_THRESHOLD)
+    if MUON_FIDUCIAL_MAP is not None:
+        load_fiducial_map(MUON_FIDUCIAL_MAP, FIDUCIAL_THRESHOLD)
+
+
 # Canonical Pveto names are kept in the analysis code.  The aliases let the same
 # Pveto code read OSUNano-style central branches without duplicating the logic.
 BRANCH_ALIASES = {
+    "event": ("event",),
     "metNoMu_pt": ("MetNoMu_pt",),
     "metNoMu_phi": ("MetNoMu_phi",),
     "passMETFilters": ("Flag_METFilters",),
@@ -143,6 +218,9 @@ BRANCH_ALIASES = {
     "trk_relativePFIso": ("IsoTrack_pfRelIso03_chg", "IsoTrack_pfRelIso03_all"),
     "trk_hp_numberOfValidPixelHits": ("IsoTrack_hp_nValidPixelHits",),
     "trk_hp_trackerLayersWithMeasurement": ("IsoTrack_hp_trackerLayersWithMeasurement",),
+    "trk_hp_numberOfValidHits": ("IsoTrack_hp_nValidHits",),
+    "trk_hp_stripLayersWithMeasurement": ("IsoTrack_hp_stripLayersWithMeasurement",),
+    "trk_hp_stripTOBLayersWithMeasurement": ("IsoTrack_hp_stripTOBLayersWithMeasurement",),
 }
 
 COMPUTED_BRANCH_REQUIREMENTS = {
@@ -219,6 +297,7 @@ PVETO_BRANCHES = [
     "trk_relativePFIso",
     "trk_caloTotNoPU",
     "trk_hp_numberOfValidPixelHits",
+    "trk_hp_numberOfValidHits",
     "trk_hp_trackerLayersWithMeasurement",
 ]
 
@@ -227,8 +306,8 @@ REQUIRED_BRANCHES = tuple(PVETO_BRANCHES)
 BRANCH_NOTES = {
     "trk_caloTotNoPU": (
         "For OSUNano inputs this is reconstructed from IsoTrack_caloEm, IsoTrack_caloHad, "
-        "and Rho_fixedGridRhoFastjetCentralCalo using the MattWIP ntuplizer formula "
-        "max(0, caloTotal - rhoCentralCalo * pi * 0.4^2)."
+        "and Rho_fixedGridRhoFastjetCentralCalo using the V1 caloNewNoPUDRp5CentralCalo "
+        "fallback max(0, caloTotal - rhoCentralCalo * pi * 0.5^2)."
     ),
     "tau_isTight": (
         "For OSUNano inputs this is read from Tau_isTight if present, otherwise "
@@ -298,6 +377,70 @@ class Count:
 
     def as_json(self) -> dict[str, float]:
         return {"value": self.value, "variance": self.variance, "error": self.error}
+
+
+def delta_r(eta1, phi1, eta2, phi2):
+    return np.sqrt((eta1 - eta2) ** 2 + delta_phi(phi1, phi2) ** 2)
+
+
+class FiducialMap:
+    def __init__(self, eta_points, phi_points, min_delta_r):
+        self.eta_points = np.asarray(eta_points, dtype=float)
+        self.phi_points = np.asarray(phi_points, dtype=float)
+        self.min_delta_r = float(min_delta_r)
+
+    @classmethod
+    def from_root(cls, path: Path, threshold: float):
+        with uproot.open(path) as fin:
+            before, x_edges, y_edges = fin["beforeVeto"].to_numpy()
+            after, _, _ = fin["afterVeto"].to_numpy()
+
+        occupied = before > 0.0
+        if not np.any(occupied):
+            return cls([], [], 0.05)
+
+        mean = np.sum(after[occupied]) / np.sum(before[occupied])
+        ratio = np.zeros_like(after, dtype=float)
+        ratio[occupied] = after[occupied] / before[occupied]
+        n_bins = int(np.count_nonzero(occupied))
+        std = 0.0
+        if n_bins > 1:
+            std = math.sqrt(np.sum((ratio[occupied] - mean) ** 2) / (n_bins - 1))
+
+        x_width = np.diff(x_edges)
+        y_width = np.diff(y_edges)
+        max_bin_radius = float(np.max(np.hypot(0.5 * x_width[:, None], 0.5 * y_width[None, :])))
+        min_delta_r = max(0.05, max_bin_radius)
+
+        hot = (ratio != 0.0) & ((ratio - mean) > threshold * std)
+        x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+        y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+        ix, iy = np.where(hot)
+        return cls(x_centers[ix], y_centers[iy], min_delta_r)
+
+    def track_mask(self, trk_eta, trk_phi):
+        mask = ak.ones_like(trk_eta, dtype=bool)
+        for eta, phi in zip(self.eta_points, self.phi_points):
+            mask = mask & (delta_r(trk_eta, trk_phi, eta, phi) >= self.min_delta_r)
+        return mask
+
+    def summary(self):
+        return {"n_veto_points": int(len(self.eta_points)), "min_delta_r": self.min_delta_r}
+
+
+@lru_cache(maxsize=32)
+def load_fiducial_map(path: str, threshold: float):
+    return FiducialMap.from_root(Path(path), threshold)
+
+
+def fiducial_map_config() -> dict[str, object]:
+    payload = {"threshold": FIDUCIAL_THRESHOLD}
+    for flavor, path in (("electron", ELECTRON_FIDUCIAL_MAP), ("muon", MUON_FIDUCIAL_MAP)):
+        entry: dict[str, object] = {"enabled": path is not None, "path": "" if path is None else path}
+        if path is not None:
+            entry["summary"] = load_fiducial_map(path, FIDUCIAL_THRESHOLD).summary()
+        payload[flavor] = entry
+    return payload
 
 
 def normalize_layers(layer: str) -> list[str]:
@@ -380,11 +523,20 @@ def input_branches_for_available(available: set[str]) -> list[str]:
             elif name in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS and all(req in available for req in CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name]):
                 needed.extend(CENTRAL_FALLBACK_BRANCH_REQUIREMENTS[name])
     needed.extend(option for option in OPTIONAL_BRANCHES if option in available)
+    if MISSING_HITS_MODE == "stochastic":
+        for name in STOCHASTIC_MISSING_HIT_BRANCHES:
+            for option in branch_options(name):
+                if option in available:
+                    needed.append(option)
+                    break
     return sorted(set(needed))
 
 
 def missing_required_for_available(available: set[str]) -> list[str]:
-    return [name for name in PVETO_BRANCHES if not available_has_branch(available, name)]
+    missing = [name for name in PVETO_BRANCHES if not available_has_branch(available, name)]
+    if MISSING_HITS_MODE == "stochastic":
+        missing.extend(name for name in STOCHASTIC_MISSING_HIT_BRANCHES if not available_has_branch(available, name))
+    return missing
 
 
 def missing_branch_message(name: str) -> str:
@@ -538,7 +690,7 @@ def branch(arrays, name: str):
         if all(has_exact_branch(arrays, req) for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
             calo_total = exact_branch(arrays, "IsoTrack_caloEm") + exact_branch(arrays, "IsoTrack_caloHad")
             rho = exact_branch(arrays, "Rho_fixedGridRhoFastjetCentralCalo")
-            return np.maximum(0.0, calo_total - rho * np.pi * 0.4 * 0.4)
+            return np.maximum(0.0, calo_total - rho * np.pi * V1_CALO_CONE_DR * V1_CALO_CONE_DR)
 
     if name == "jet_isTightLepVeto" and not any(has_exact_branch(arrays, option) for option in branch_options(name)):
         if all(has_exact_branch(arrays, req) for req in COMPUTED_BRANCH_REQUIREMENTS[name]):
@@ -656,6 +808,81 @@ def any_pair_per_event(pair_mask):
     return ak.any(ak.flatten(pair_mask, axis=2), axis=1)
 
 
+
+def track_producer_prefilter_mask(arrays):
+    mask = branch(arrays, "trk_pt") >= V1_MIN_TRACK_PT
+    if V1_MAX_REL_TRACK_ISO >= 0.0:
+        mask = mask & (branch(arrays, "trk_relativePFIso") < V1_MAX_REL_TRACK_ISO)
+    return mask
+
+
+def in_tob_crack_mask(arrays):
+    return (np.abs(branch(arrays, "trk_dz")) < 0.5) & (
+        np.abs((np.pi / 2.0) - branch(arrays, "trk_theta")) < 1.0e-3
+    )
+
+
+def fiducial_track_mask(kind: str, arrays):
+    trk_eta = branch(arrays, "trk_eta")
+    trk_phi = branch(arrays, "trk_phi")
+    if kind == "electron":
+        path = ELECTRON_FIDUCIAL_MAP
+    elif kind == "muon":
+        path = MUON_FIDUCIAL_MAP
+    else:
+        raise ValueError(f"Unknown fiducial map kind {kind!r}")
+    if path is None:
+        return ak.ones_like(trk_eta, dtype=bool)
+    return load_fiducial_map(path, FIDUCIAL_THRESHOLD).track_mask(trk_eta, trk_phi)
+
+
+def stable_seed(event_number: int, track_index: int):
+    value = int(event_number) & 0xFFFFFFFFFFFFFFFF
+    value ^= (int(track_index) + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+    value ^= (value >> 30)
+    value = (value * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    value ^= (value >> 27)
+    value = (value * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    value ^= (value >> 31)
+    return value & 0xFFFFFFFF
+
+
+def hit_drop_missing_hits(arrays):
+    middle = branch(arrays, "trk_hitDrop_missingMiddleHits")
+    outer = branch(arrays, "trk_missingOuterHits")
+    if MISSING_HITS_MODE == "saved":
+        return middle, outer
+
+    params = MISSING_HITS_CORRECTIONS[MISSING_HITS_PERIOD]
+    counts = ak.num(middle, axis=1)
+    events = np.asarray(ak.to_numpy(branch(arrays, "event")))
+    flat_events = np.repeat(events, np.asarray(ak.to_numpy(counts)))
+    flat_track_index = np.asarray(ak.to_numpy(ak.flatten(ak.local_index(middle, axis=1), axis=1)))
+    flat_middle = np.asarray(ak.to_numpy(ak.flatten(middle, axis=1)))
+    flat_outer = np.asarray(ak.to_numpy(ak.flatten(outer, axis=1)))
+    strip_layers = np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "trk_hp_stripLayersWithMeasurement"), axis=1)))
+    tob_layers = np.asarray(ak.to_numpy(ak.flatten(branch(arrays, "trk_hp_stripTOBLayersWithMeasurement"), axis=1)))
+
+    out_middle = np.empty_like(flat_middle, dtype=np.int32)
+    out_outer = np.empty_like(flat_outer, dtype=np.int32)
+    for i, (event, trk_idx) in enumerate(zip(flat_events, flat_track_index)):
+        rng = np.random.default_rng(stable_seed(int(event), int(trk_idx)))
+        drop_tob = rng.random() < params["dropTOBProbability"]
+        extra_ineff = (
+            params["postTOBDropHitInefficiency"]
+            if drop_tob
+            else params["preTOBDropHitInefficiency"]
+        )
+        extra_missing = rng.binomial(max(int(strip_layers[i] - tob_layers[i]), 0), extra_ineff)
+        middle_hits = int(flat_middle[i]) + extra_missing
+        outer_hits = int(flat_outer[i])
+        if drop_tob:
+            outer_hits += int(tob_layers[i])
+        out_middle[i] = middle_hits
+        out_outer[i] = outer_hits
+    return ak.unflatten(out_middle, counts), ak.unflatten(out_outer, counts)
+
+
 def layer_mask(arrays, layer: str):
     n_layers = branch(arrays, "trk_hp_trackerLayersWithMeasurement")
 
@@ -719,17 +946,19 @@ def good_tau_mask(arrays):
 
 
 def probe_track_denominator_mask(arrays, layer: str):
-    mask = branch(arrays, "trk_pt") > 30
+    hitdrop_middle, _ = hit_drop_missing_hits(arrays)
+    mask = track_producer_prefilter_mask(arrays)
+    mask = mask & (branch(arrays, "trk_pt") > 30)
     mask = mask & (np.abs(branch(arrays, "trk_eta")) < 2.1)
     mask = mask & fiducial_eta_mask(arrays)
+    mask = mask & ~in_tob_crack_mask(arrays)
+    mask = mask & fiducial_track_mask("electron", arrays)
+    mask = mask & fiducial_track_mask("muon", arrays)
     mask = mask & branch(arrays, "trk_isFiducialECALTrack")
-    mask = mask & (
-        (np.abs(branch(arrays, "trk_dz")) > 0.5)
-        | (np.abs((np.pi / 2.0) - branch(arrays, "trk_theta")) > 1.0e-3)
-    )
     mask = mask & (branch(arrays, "trk_hp_numberOfValidPixelHits") >= 4)
+    mask = mask & (branch(arrays, "trk_hp_numberOfValidHits") >= 4)
     mask = mask & (branch(arrays, "trk_missingInnerHits") == 0)
-    mask = mask & (branch(arrays, "trk_hitDrop_missingMiddleHits") == 0)
+    mask = mask & (hitdrop_middle == 0)
     mask = mask & (branch(arrays, "trk_relativePFIso") < 0.05)
     mask = mask & (np.abs(branch(arrays, "trk_dxy")) < 0.02)
     mask = mask & (np.abs(branch(arrays, "trk_dz")) < 0.5)
@@ -787,68 +1016,68 @@ def make_tp_cutflow(arrays, layer: str):
 
     mu = branch(arrays, "Muon_pt") > 26
     add(">= 1 muons pT > 26 GeV", ak.any(mu, axis=1))
+    mu = mu & muon_trigger_match_mask(arrays)
+    add(">= 1 muons firing trigger", ak.any(mu, axis=1))
     mu = mu & (np.abs(branch(arrays, "Muon_eta")) < 2.1)
     add(">= 1 muons |eta| < 2.1", ak.any(mu, axis=1))
     mu = mu & branch(arrays, "Muon_tightId")
     add(">= 1 muons passing tight muon ID", ak.any(mu, axis=1))
     mu = mu & (branch(arrays, "muon_pfRelIso04_dBeta") < 0.15)
     add(">= 1 muons PF isolation < 0.15", ak.any(mu, axis=1))
-    mu = mu & muon_trigger_match_mask(arrays)
-    add(">= 1 muons matched to trigger object", ak.any(mu, axis=1))
     add(">= 1 passing muon tag", ak.any(mu, axis=1))
 
-    trk = branch(arrays, "trk_pt") > 30
+    hitdrop_middle, _ = hit_drop_missing_hits(arrays)
+    trk = track_producer_prefilter_mask(arrays)
+    trk = trk & (branch(arrays, "trk_pt") > 30)
     add(">= 1 tracks pT > 30 GeV", ak.any(trk, axis=1))
     trk = trk & (np.abs(branch(arrays, "trk_eta")) < 2.1)
     add(">= 1 tracks |eta| < 2.1", ak.any(trk, axis=1))
     trk_eta = branch(arrays, "trk_eta")
-    trk = trk & ((np.abs(trk_eta) < 0.15) | (np.abs(trk_eta) > 0.35))
-    add(">= 1 tracks |eta| < 0.15 OR |eta| > 0.35", ak.any(trk, axis=1))
     trk = trk & ((np.abs(trk_eta) < 1.42) | (np.abs(trk_eta) > 1.65))
     add(">= 1 tracks |eta| < 1.42 OR |eta| > 1.65", ak.any(trk, axis=1))
+    trk = trk & ((np.abs(trk_eta) < 0.15) | (np.abs(trk_eta) > 0.35))
+    add(">= 1 tracks |eta| < 0.15 OR |eta| > 0.35", ak.any(trk, axis=1))
     trk = trk & ((np.abs(trk_eta) < 1.55) | (np.abs(trk_eta) > 1.85))
     add(">= 1 tracks |eta| < 1.55 OR |eta| > 1.85", ak.any(trk, axis=1))
+    trk = trk & ~in_tob_crack_mask(arrays)
+    add(">= 1 tracks with !inTOBCrack", ak.any(trk, axis=1))
+    trk = trk & fiducial_track_mask("electron", arrays)
+    add(">= 1 tracks with isFiducialElectronTrack", ak.any(trk, axis=1))
+    trk = trk & fiducial_track_mask("muon", arrays)
+    add(">= 1 tracks with isFiducialMuonTrack", ak.any(trk, axis=1))
     trk = trk & branch(arrays, "trk_isFiducialECALTrack")
-    add(">= 1 tracks min DeltaRtrack,noisy/dead ECAL channel > 0.05", ak.any(trk, axis=1))
-    trk = trk & (
-        (np.abs(branch(arrays, "trk_dz")) > 0.5)
-        | (np.abs((np.pi / 2.0) - branch(arrays, "trk_theta")) > 1.0e-3)
-    )
-    add(">= 1 tracks |dz| > 0.5 cm OR |lambda| > 1e-3", ak.any(trk, axis=1))
+    add(">= 1 tracks with isFiducialECALTrack", ak.any(trk, axis=1))
     trk = trk & (branch(arrays, "trk_hp_numberOfValidPixelHits") >= 4)
     add(">= 1 tracks number of pixel hits >= 4", ak.any(trk, axis=1))
+    trk = trk & (branch(arrays, "trk_hp_numberOfValidHits") >= 4)
+    add(">= 1 tracks with hitPattern_.numberOfValidHits >= 4", ak.any(trk, axis=1))
     trk = trk & (branch(arrays, "trk_missingInnerHits") == 0)
     add(">= 1 tracks missing inner hits = 0", ak.any(trk, axis=1))
-    trk = trk & (branch(arrays, "trk_hitDrop_missingMiddleHits") == 0)
-    add(">= 1 tracks missing middle hits = 0", ak.any(trk, axis=1))
+    trk = trk & (hitdrop_middle == 0)
+    add(">= 1 tracks with hitDrop_missingMiddleHits == 0", ak.any(trk, axis=1))
     trk = trk & (branch(arrays, "trk_relativePFIso") < 0.05)
     add(">= 1 tracks rel. PF-based iso. < 0.05", ak.any(trk, axis=1))
     trk = trk & (np.abs(branch(arrays, "trk_dxy")) < 0.02)
     add(">= 1 tracks |dxy| < 0.02 cm", ak.any(trk, axis=1))
-    # FIXME: Check which data eras should use the |lambda| > 1e-3 fallback here.
-    # MattWIP ntuple Pveto currently applies the plain |dz| < 0.5 cm cut.
     trk = trk & (np.abs(branch(arrays, "trk_dz")) < 0.5)
     add(">= 1 tracks |dz| < 0.5 cm", ak.any(trk, axis=1))
-    # FIXME: Check which data eras require this water-leak veto before enabling it.
-    # trk = trk & ((trk_eta < 0.0) | (trk_eta > 1.42) | (branch(arrays, "trk_phi") < 2.7))
-    # add(">= 1 tracks eta < 0 OR eta > 1.42 OR phi < 2.7", ak.any(trk, axis=1))
     trk = trk & min_delta_r_mask(arrays, "Jet", 0.5, obj_mask=good_jet_mask(arrays))
     add(">= 1 track-jet pairs DeltaRtrack,jet > 0.5", ak.any(trk, axis=1))
     add("event passes jet veto map filter", branch(arrays, "passJvmFilter"))
-
-    muons = build_muon_vectors(arrays, mu)
-    tracks_pre_veto = build_track_vectors(arrays, trk)
-    trk_obj, mu_obj = ak.unzip(ak.cartesian([tracks_pre_veto, muons], nested=True))
-    mass = (trk_obj + mu_obj).mass
-    add(">= 1 track-muon pairs Mtrack,muon > 10 GeV", any_pair_per_event(mass > 10))
 
     trk = trk & min_delta_r_mask(arrays, "Electron", 0.15, obj_mask=loose_electron_mask(arrays))
     add(">= 1 tracks min DeltaRtrack,loose electron > 0.15", ak.any(trk, axis=1))
     trk = trk & min_delta_r_mask(arrays, "tau", 0.15, obj_mask=good_tau_mask(arrays))
     add(">= 1 tracks min DeltaRtrack,had. tau > 0.15", ak.any(trk, axis=1))
     trk = trk & (branch(arrays, "trk_caloTotNoPU") < 10)
-    add(">= 1 tracks Ecalo < 10 GeV", ak.any(trk, axis=1))
+    add(">= 1 tracks with caloNewNoPUDRp5CentralCalo < 10", ak.any(trk, axis=1))
     add(">= 1 passing probe track before layer selection", ak.any(trk, axis=1))
+
+    muons = build_muon_vectors(arrays, mu)
+    tracks_pre_layer = build_track_vectors(arrays, trk)
+    trk_obj, mu_obj = ak.unzip(ak.cartesian([tracks_pre_layer, muons], nested=True))
+    mass = (trk_obj + mu_obj).mass
+    add(">= 1 track-muon pairs Mtrack,muon > 10 GeV", any_pair_per_event(mass > 10))
 
     trk = trk & layer_mask(arrays, layer)
     muons = build_muon_vectors(arrays, mu)
@@ -918,6 +1147,22 @@ def make_payload(input_files: Iterable[str], tree: str, layer_results: dict) -> 
         "input_files": list(input_files),
         "tree": tree,
         "jet_veto": jet_veto_config(),
+        "fiducial_maps": fiducial_map_config(),
+        "track_producer_prefilter": {
+            "source": "V1 OSUTrackProducer settings documented in CollectionProducer_cff.py",
+            "minTrackPt": V1_MIN_TRACK_PT,
+            "maxRelTrackIso": V1_MAX_REL_TRACK_ISO,
+        },
+        "missing_hits": {
+            "mode": MISSING_HITS_MODE,
+            "period": MISSING_HITS_PERIOD,
+        },
+        "calo": {
+            "mode": "V1 caloNewNoPUDRp5CentralCalo fallback when direct trk_caloTotNoPU is absent",
+            "cone_dr": V1_CALO_CONE_DR,
+            "formula": "max(0, IsoTrack_caloEm + IsoTrack_caloHad - Rho_fixedGridRhoFastjetCentralCalo * pi * cone_dr^2)",
+            "note": "Direct trk_caloTotNoPU/IsoTrack_caloTotNoPU is used first if present.",
+        },
         "layers": {},
     }
     for layer, result in layer_results.items():
